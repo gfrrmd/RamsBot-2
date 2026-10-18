@@ -10,9 +10,9 @@ HOME = Btn("🏠 Menu Utama", callback_data="menu_back")
 
 def main_keyboard(uid):
     rows = [
-        [Btn("💎 Beli / Perpanjang VIP", callback_data="pay_menu")],
+        [Btn("✨ Setup Bot", callback_data="menu_setup")],
         [Btn("🎯 Fitur VIP", callback_data="menu_fitur"), Btn("👤 Status Akun", callback_data="menu_subscription")],
-        [Btn("✨ Setup Bot", callback_data="menu_setup"), Btn("📖 Panduan", callback_data="menu_beli")],
+        [Btn("📖 Panduan", callback_data="menu_beli"), Btn("💎 Beli VIP", callback_data="pay_menu")],
     ]
     if uid == ADMIN_ID:
         rows.append([Btn("🛠️ Panel Admin", callback_data="menu_admin")])
@@ -67,7 +67,7 @@ def bc_blacklist_keyboard():
 
 def beli_keyboard():
     return InlineKeyboardMarkup([
-        [Btn("💎 Beli / Perpanjang VIP", callback_data="pay_menu")],
+        [Btn("💎 Beli VIP", callback_data="pay_menu")],
         [Btn("🔙 Kembali", callback_data="menu_back")],
     ])
 

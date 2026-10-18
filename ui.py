@@ -11,7 +11,6 @@ from config import BOT_NAME
 from database import get_subscription_info
 
 WIB = timezone(timedelta(hours=7))
-LINE = "━━━━━━━━━━━━━━━━━━"
 _BULAN = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"]
 
 
@@ -69,11 +68,13 @@ def fmt_remaining(delta: timedelta) -> str:
 
 
 def header(emoji: str, title: str) -> str:
-    return f"{emoji} <b>{esc(title)}</b>\n{LINE}"
+    """Judul tebal sederhana (tanpa garis pemisah)."""
+    return "<b>" + emoji + " " + esc(title) + "</b>\n"
 
 
-def kv(label: str, value, width: int = 11) -> str:
-    return f"<code>{label:<{width}}</code> {value}"
+def kv(label: str, value, width: int = 0) -> str:
+    """Baris data rapi: 'Label: nilai' (width diabaikan, dipertahankan demi kompatibilitas)."""
+    return f"{label}: {value}"
 
 
 # ── Status langganan ──────────────────────────────────────────────────────────
@@ -99,7 +100,7 @@ def sub_badge(uid: int) -> str:
     s = get_sub_state(uid)
     if s["state"] == "active":
         label = "Trial 🎟️" if s["plan"] == "trial" else "VIP 💎"
-        return f"{label} · sisa {fmt_remaining(s['remaining'])}"
+        return f"{label} (sisa {fmt_remaining(s['remaining'])})"
     if s["state"] == "expired":
         return "⚠️ Expired"
     if s["state"] == "revoked":
@@ -122,16 +123,14 @@ def uptime_str(uid: int) -> str:
 
 
 def build_home_text(user) -> str:
+    """Teks sapaan /start — sama seperti RamsBot asli."""
     first = esc(user.first_name or "Kamu")
     return (
-        f"{header('💎', BOT_NAME + ' VIP')}\n"
-        f"Halo, <b>{first}</b>! 👋\n\n"
-        f"{kv('Akun', sub_badge(user.id))}\n"
-        f"{kv('Session', session_badge(user.id))}\n"
-        f"{LINE}\n"
-        "Download media timer 📥 · channel private 📣 · story 🎥\n"
-        "Broadcast 📢 · QRIS dinamis 💳 dan lainnya 🚀\n\n"
-        "👇 Pilih menu di bawah."
+        f"Halo, {first}! 👋\n"
+        "Aku adalah Bot Telegram pribadi dengan berbagai fitur eksklusif. ✨\n\n"
+        "Dengan bot ini kamu bisa <b>Download Media Timer</b> 📥, <b>Download Media Channel Private</b> 📣, "
+        "<b>Download Story</b> 🎥, <b>Broadcast Pesan</b> 📢, <b>QRIS Dinamis</b> 💳, dan masih banyak lagi 🚀\n\n"
+        "👇 Pilih menu di bawah untuk mulai."
     )
 
 
