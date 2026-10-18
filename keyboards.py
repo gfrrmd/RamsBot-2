@@ -87,7 +87,7 @@ def back_to_fitur_keyboard():
 def qris_keyboard(has_qris: bool):
     rows = [[Btn("🔄 Ganti QRIS Statis" if has_qris else "📤 Upload QRIS Statis", callback_data="qris_upload")]]
     if has_qris:
-        rows.append([Btn("👁️ Lihat QRIS Tersimpan", callback_data="qris_view"), Btn("🗑️ Hapus", callback_data="qris_delete")])
+        rows.append([Btn("👁️ Lihat QRIS", callback_data="qris_view"), Btn("🗑️ Hapus", callback_data="qris_delete")])
     rows.append([Btn("🔙 Kembali ke Fitur VIP", callback_data="menu_fitur")])
     return InlineKeyboardMarkup(rows)
 
