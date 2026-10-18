@@ -120,9 +120,6 @@ async def user_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
             "<b>1.</b> 💎 Beli VIP lewat tombol <b>Beli / Perpanjang VIP</b> (bayar QRIS, kirim bukti).\n"
             "<b>2.</b> ✨ Tekan <b>Setup Bot</b> lalu login akun Telegram kamu (nomor HP → OTP → 2FA bila ada).\n"
             "<b>3.</b> 🎯 Pakai fitur lewat command di chat Telegram mana pun.\n\n"
-            f"\n<b>Command singkat</b>\n"
-            "<code>.dl</code> (reply media timer) - <code>.copy (link)</code> - <code>.story (link)</code>\n"
-            "<code>.bc (pesan)</code> - <code>.qris (nominal)</code> - <code>.acceptall</code> - <code>.ping</code>\n\n"
             f"Pertanyaan lain? Hubungi admin {esc(ADMIN_CONTACT)}",
             beli_keyboard(),
         )
