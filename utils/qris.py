@@ -317,7 +317,7 @@ def render_qr_png(payload: str, title: str = "QRIS", merchant: str = "", amount:
     img = Image.new("RGB", (width, height), "white")
     d = ImageDraw.Draw(img)
 
-    d.rectangle([0, 0, width, band_h], fill=(200, 16, 46))
+    d.rectangle([0, 0, width, band_h], fill=(76, 0, 153))
     f_title = _load_font(34, bold=True)
     tw = d.textlength(title, font=f_title)
     d.text(((width - tw) / 2, 18), title, font=f_title, fill="white")
@@ -340,7 +340,7 @@ def render_qr_png(payload: str, title: str = "QRIS", merchant: str = "", amount:
         f_a = _load_font(36, bold=True)
         txt = format_rupiah(amount)
         aw = d.textlength(txt, font=f_a)
-        d.text(((width - aw) / 2, ty), txt, font=f_a, fill=(200, 16, 46))
+        d.text(((width - aw) / 2, ty), txt, font=f_a, fill=(76, 0, 153))
 
     out = io.BytesIO()
     img.save(out, format="PNG", optimize=True)
