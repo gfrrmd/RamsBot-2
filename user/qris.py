@@ -124,7 +124,7 @@ def _menu_text(uid: int) -> str:
     warn = "" if session_ok else "\n\n⚠️ Session belum aktif. Selesaikan <b>Setup Bot</b> dulu agar command <code>.qris</code> bisa dipakai."
     return (
         f"{header('💳', 'QRIS Dinamis')}\n"
-        "Ubah <b>QRIS statis</b> tokomu menjadi <b>QRIS dinamis</b> dengan nominal otomatis, langsung dari chat mana pun.\n\n"
+        "Ubah <b>QRIS statis</b> milikmu menjadi <b>QRIS dinamis</b> dengan nominal otomatis, langsung dari chat mana pun.\n\n"
         f"{data}\n\n"
         "📝 <b>Cara pakai:</b>\n"
         "<code>.qris (nominal)</code>\n\n"
@@ -162,7 +162,7 @@ async def qris_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
         await edit_or_send(
             query,
             f"{header('📤', 'Upload QRIS Statis')}\n"
-            "Kirim <b>gambar QRIS statis</b> tokomu (screenshot atau foto, boleh sebagai file).\n\n"
+            "Kirim <b>gambar QRIS statis</b> milikmu (screenshot atau foto, boleh sebagai file).\n\n"
             "✅ Pastikan QR terlihat penuh, tidak blur & tidak terpotong.\n"
             "✅ Alternatif: tempel kode QRIS-nya sebagai teks (diawali <code>000201</code>).\n\n"
             "Ketik /cancel atau tekan Batal untuk membatalkan.",
