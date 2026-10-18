@@ -29,10 +29,26 @@ Hasil `.qris` dikirim di chat tempat command diketik.
 |---|---|
 | 📊 Statistik | User, VIP aktif/expired, session online, order, pendapatan |
 | 💳 Pembayaran | Set QRIS penerima, kelola paket & harga, kode unik, batas waktu, verifikasi order |
-| 💾 Auto Backup | Jadwal 6j/12j/24j/3h/7h → PM admin (+ channel opsional), `.sql.gz` |
+| 🗄️ Data | Satu kategori untuk semua hal database: info ukuran & jumlah data, Backup DB, Restore DB (`.sql`/`.sql.gz`), Auto Backup, dan Bersihkan Data |
+| 💾 Auto Backup (di menu Data) | Jadwal 6j/12j/24j/3h/7h → PM admin (+ channel opsional), `.sql.gz` |
+| 🧹 Bersihkan Data (di menu Data) | Hapus data tidak penting dengan pratinjau jumlah, konfirmasi, dan backup otomatis dulu |
 | 👑 List VIP / 🔎 Cek User | Daftar VIP berpaginasi; kartu user dengan tombol +7/+30 hari & revoke |
 | 📢 Pengumuman | Kirim pesan (teks/media) ke semua user bot |
-| 🎁 Gift / 🚫 Revoke / 🔒 Blacklist / 📦 Backup / ♻️ Restore | Fitur lama, tetap ada (restore kini terima `.sql.gz`) |
+| 🎁 Gift / 🚫 Revoke / 🔒 Blacklist | Fitur lama, tetap ada |
+
+### 🧹 Bersihkan Data
+Panel Admin → 🗄️ Data → 🧹 Bersihkan Data. Kategori yang bisa dihapus:
+
+| Kategori | Kriteria |
+|---|---|
+| Pesanan gagal | status expired / cancelled / rejected, lebih dari 7 hari |
+| Riwayat pesanan lunas | status paid, lebih dari 90 hari (tidak ikut "Bersihkan Semua" karena memengaruhi total pendapatan) |
+| Langganan expired lama | expired lebih dari 90 hari dan user tidak punya session |
+| User tidak aktif | daftar lebih dari 30 hari, tanpa langganan/session/pesanan/QRIS, belum pernah trial |
+| Data yatim | pengaturan/QRIS/blacklist milik user yang sudah tidak ada |
+
+**Tidak pernah dihapus:** session user, VIP aktif, pesanan pending/verifying, paket, pengaturan bot, blacklist channel, dan user yang pernah memakai trial (agar trial tidak bisa diulang).
+Setiap pembersihan menampilkan jumlah pasti lebih dulu, meminta konfirmasi, mengirim backup ke admin, lalu menjalankan penghapusan dalam satu transaksi.
 
 ### 💳 Alur Pembayaran
 1. Admin: Panel Admin → Pembayaran → **Set QRIS Bayar** + **Kelola Paket** (`Nama | Hari | Harga`).

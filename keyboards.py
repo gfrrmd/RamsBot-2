@@ -101,9 +101,17 @@ def admin_keyboard(pending: int = 0):
         [Btn("👑 List VIP", callback_data="admin_viplist_0"), Btn("🔎 Cek User", callback_data="admin_finduser")],
         [Btn("🎁 Gift VIP", callback_data="admin_gift"), Btn("🚫 Revoke VIP", callback_data="admin_revoke")],
         [Btn("📢 Pengumuman", callback_data="admin_announce"), Btn("🔒 Blacklist", callback_data="admin_blacklist")],
-        [Btn("💾 Auto Backup", callback_data="admin_autobackup")],
-        [Btn("📦 Backup DB", callback_data="admin_backup"), Btn("♻️ Restore DB", callback_data="admin_restore")],
+        [Btn("🗄️ Data", callback_data="admin_data")],
         [HOME],
+    ])
+
+
+def data_keyboard():
+    """Kategori Data: semua hal yang berhubungan dengan database."""
+    return InlineKeyboardMarkup([
+        [Btn("📦 Backup DB", callback_data="admin_backup"), Btn("♻️ Restore DB", callback_data="admin_restore")],
+        [Btn("💾 Auto Backup", callback_data="admin_autobackup"), Btn("🧹 Bersihkan Data", callback_data="admin_clean")],
+        [Btn("🔙 Panel Admin", callback_data="menu_admin")],
     ])
 
 

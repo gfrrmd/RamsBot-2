@@ -744,3 +744,127 @@ def get_subs_for_reminder() -> list[dict]:
 
 def set_reminder_stage(user_id: int, stage: int) -> None:
     _run("UPDATE subscriptions SET reminder_stage=%s WHERE user_id=%s", (stage, user_id))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Kategori Data — info database & pembersihan data tidak penting
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Batas umur (hari) sebelum data dianggap layak dibersihkan.
+CLEAN_DAYS = {"orders_dead": 7, "orders_paid": 90, "subs_old": 90, "users_idle": 30}
+
+# Kategori pembersihan. "safe": ikut "Bersihkan Semua". Riwayat lunas TIDAK ikut
+# karena memengaruhi total pendapatan di statistik.
+CLEAN_KEYS = ["orders_dead", "orders_paid", "subs_old", "users_idle", "orphans"]
+CLEAN_SAFE_KEYS = ["orders_dead", "subs_old", "users_idle", "orphans"]
+
+_ORPHAN_TABLES = ["user_settings", "user_qris", "bc_group_blacklist", "auto_block_channels"]
+
+
+def _cutoff(days: int) -> str:
+    return (datetime.now() - timedelta(days=days)).isoformat()
+
+
+def get_db_info() -> dict:
+    """Ukuran database + jumlah baris tabel utama (untuk layar Data)."""
+    info: dict = {"size": None}
+    try:
+        info["size"] = int(_run("SELECT pg_database_size(current_database())", (), "one")[0])
+    except Exception:
+        pass
+    for t in ("users", "sessions", "subscriptions", "orders", "user_qris", "plans"):
+        info[t] = _scalar(f"SELECT COUNT(*) FROM {t}")
+    return info
+
+
+def _clean_where(key: str):
+    """(tabel, klausa WHERE, params) untuk kategori selain 'orphans'."""
+    from config import ADMIN_ID
+    if key == "orders_dead":
+        return "orders", "status IN ('expired','cancelled','rejected') AND updated_at < %s", (_cutoff(CLEAN_DAYS[key]),)
+    if key == "orders_paid":
+        return "orders", "status='paid' AND paid_at < %s", (_cutoff(CLEAN_DAYS[key]),)
+    if key == "subs_old":
+        return "subscriptions", "expired_at < %s AND user_id NOT IN (SELECT user_id FROM sessions)", (_cutoff(CLEAN_DAYS[key]),)
+    if key == "users_idle":
+        # trial_used=1 TIDAK dihapus agar trial tidak bisa dipakai ulang.
+        return "users", (
+            "COALESCE(trial_used,0)=0 AND created_at < %s AND user_id <> %s "
+            "AND user_id NOT IN (SELECT user_id FROM subscriptions) "
+            "AND user_id NOT IN (SELECT user_id FROM sessions) "
+            "AND user_id NOT IN (SELECT user_id FROM orders) "
+            "AND user_id NOT IN (SELECT user_id FROM user_qris)"
+        ), (_cutoff(CLEAN_DAYS[key]), ADMIN_ID)
+    raise KeyError(key)
+
+
+def _orphan_where(table: str) -> str:
+    # Yatim = pemiliknya tidak ada di users DAN tidak punya langganan/session.
+    return ("user_id NOT IN (SELECT user_id FROM users) "
+            "AND user_id NOT IN (SELECT user_id FROM subscriptions) "
+            "AND user_id NOT IN (SELECT user_id FROM sessions)")
+
+
+def cleanup_preview() -> dict:
+    """Jumlah baris yang akan dihapus per kategori (tanpa menghapus apa pun)."""
+    out = {}
+    for key in CLEAN_KEYS:
+        if key == "orphans":
+            out[key] = sum(_scalar(f"SELECT COUNT(*) FROM {t} WHERE {_orphan_where(t)}") for t in _ORPHAN_TABLES)
+        else:
+            table, where, params = _clean_where(key)
+            out[key] = _scalar(f"SELECT COUNT(*) FROM {table} WHERE {where}", params)
+    return out
+
+
+def _clean_exec(cur, key: str) -> int:
+    if key == "orphans":
+        total = 0
+        for t in _ORPHAN_TABLES:
+            cur.execute(f"DELETE FROM {t} WHERE {_orphan_where(t)}")
+            total += cur.rowcount or 0
+        return total
+    table, where, params = _clean_where(key)
+    cur.execute(f"DELETE FROM {table} WHERE {where}", params)
+    return cur.rowcount or 0
+
+
+def cleanup_run_many(keys: list[str], dry_run: bool = False) -> dict:
+    """
+    Hapus beberapa kategori dalam SATU transaksi (semua berhasil atau tidak sama sekali).
+    Urutan tetap: langganan lama dulu agar user idle terdeteksi, data yatim terakhir.
+    dry_run=True: jalankan lalu ROLLBACK -> hanya untuk mengetahui jumlah pasti.
+    """
+    order = [k for k in CLEAN_KEYS if k in keys]
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        result = {}
+        for k in ("subs_old", "orders_dead", "orders_paid", "users_idle", "orphans"):
+            if k in order:
+                result[k] = _clean_exec(cur, k)
+        if dry_run:
+            conn.rollback()
+        else:
+            conn.commit()
+        return {k: result[k] for k in order}
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def cleanup_run(key: str) -> int:
+    """Hapus satu kategori. Return jumlah baris terhapus."""
+    return cleanup_run_many([key])[key]
+
+
+def vacuum_db() -> None:
+    """Rapikan ruang setelah penghapusan (VACUUM tidak boleh di dalam transaksi)."""
+    conn = get_conn()
+    try:
+        conn.autocommit = True
+        conn.cursor().execute("VACUUM ANALYZE")
+    finally:
+        conn.close()
