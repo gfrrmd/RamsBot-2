@@ -1,0 +1,8 @@
+python-telegram-bot==21.11.1
+telethon==1.39.0
+psycopg2-binary==2.9.10
+# --- QRIS dinamis & pembayaran (v2) ---
+Pillow==11.1.0
+qrcode==8.0
+zxing-cpp==2.3.0
+opencv-python-headless==4.10.0.84
