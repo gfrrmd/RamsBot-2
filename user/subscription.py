@@ -1,31 +1,27 @@
-from ui import LINE, esc, fmt_dt, fmt_remaining, get_sub_state, header, kv, session_badge, uptime_str
-from database import get_user_qris
+from ui import esc, fmt_dt, fmt_remaining, get_sub_state, header, session_badge, uptime_str
 
 
 def build_subscription_text(uid: int, full_name: str = None, username: str = None) -> str:
-    """Kartu Status Akun (HTML)."""
+    """Kartu Status Akun (HTML) dengan label seperti RamsBot asli."""
     s = get_sub_state(uid)
-    uname = f"@{esc(username)}" if username else "—"
+    uname = "@" + esc(username) if username else "—"
     if s["state"] == "none":
         plan, exp, sisa = "—", "—", "—"
     else:
-        plan = "Trial 🎟️" if s["plan"] == "trial" else "VIP 💎"
+        plan = "Trial" if s["plan"] == "trial" else "VIP 💎"
         exp = esc(fmt_dt(s["expired"]))
         if s["state"] == "active":
             sisa = fmt_remaining(s["remaining"])
         else:
-            sisa = "⚠️ Expired" if s["state"] == "expired" else "🚫 Dicabut"
+            sisa = "Expired ⚠️" if s["state"] == "expired" else "Dicabut 🚫"
     return (
-        f"{header('👤', 'Status Akun')}\n"
-        f"{kv('Nama', esc(full_name), 10)}\n"
-        f"{kv('Username', uname, 10)}\n"
-        f"{kv('ID', '<code>' + str(uid) + '</code>', 10)}\n"
-        f"{LINE}\n"
-        f"{kv('Plan', plan, 10)}\n"
-        f"{kv('Expired', exp, 10)}\n"
-        f"{kv('Sisa', sisa, 10)}\n"
-        f"{LINE}\n"
-        f"{kv('Bot', session_badge(uid), 10)}\n"
-        f"{kv('Uptime', uptime_str(uid), 10)}\n"
-        f"{kv('QRIS', 'Tersimpan ✅' if get_user_qris(uid) else 'Belum ada', 10)}"
+        header("👤", "Status Akun") + "\n"
+        f"Pengguna: {esc(full_name)}\n"
+        f"Username: {uname}\n"
+        f"ID: <code>{uid}</code>\n"
+        f"Status Bot: {session_badge(uid)}\n"
+        f"Plan: {plan}\n"
+        f"Expired: {exp}\n"
+        f"Sisa: {sisa}\n"
+        f"Uptime Bot: {uptime_str(uid)}"
     )

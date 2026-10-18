@@ -29,7 +29,6 @@ from database import (
     update_order_status,
 )
 from ui import (
-    LINE,
     STATUS_LABEL,
     edit_or_send,
     esc,
@@ -91,10 +90,10 @@ def _order_caption(order: dict) -> str:
     lines.append(kv("Status", STATUS_LABEL.get(order["status"], order["status"])))
     if order["status"] == "pending":
         lines.append(kv("Bayar s/d", esc(fmt_dt(_deadline(order)))))
-        lines.append(f"{LINE}\nScan QRIS di atas lalu bayar <b>tepat sesuai total</b> (jangan dibulatkan). "
+        lines.append(f"\nScan QRIS di atas lalu bayar <b>tepat sesuai total</b> (jangan dibulatkan). "
                      "Setelah bayar, tekan <b>Kirim Bukti Bayar</b>.")
     elif order["status"] == "verifying":
-        lines.append(f"{LINE}\nBukti sudah diterima. Admin akan memverifikasi — kamu akan mendapat notifikasi otomatis.")
+        lines.append(f"\nBukti sudah diterima. Admin akan memverifikasi — kamu akan mendapat notifikasi otomatis.")
     return "\n".join(lines)
 
 
@@ -128,11 +127,11 @@ async def show_pay_menu(query, uid: int):
     rows = []
     open_o = get_open_order(uid)
     if open_o:
-        rows.append([Btn(f"🧾 Lanjutkan Pesanan #{open_o['id']} · {rp(open_o['total'])}", callback_data=f"pay_view_{open_o['id']}")])
+        rows.append([Btn(f"🧾 Lanjutkan Pesanan #{open_o['id']} - {rp(open_o['total'])}", callback_data=f"pay_view_{open_o['id']}")])
     lines.append("📦 <b>Pilih paket:</b>")
     for p in plans:
         lines.append(f"• <b>{esc(p['name'])}</b> — {p['days']} hari — {rp(p['price'])}")
-        rows.append([Btn(f"💎 {p['name']} · {rp(p['price'])}", callback_data=f"pay_plan_{p['id']}")])
+        rows.append([Btn(f"💎 {p['name']} - {rp(p['price'])}", callback_data=f"pay_plan_{p['id']}")])
     lines += [
         "",
         "ℹ️ Perpanjang sebelum habis → sisa hari <b>otomatis ditambahkan</b>.",
@@ -212,7 +211,7 @@ async def payment_callback_handler(update: Update, context: ContextTypes.DEFAULT
             body = "Belum ada pesanan."
         else:
             body = "\n".join(
-                f"<b>#{o['id']}</b> · {esc(o['plan_name'])} · {rp(o['total'])}\n   {STATUS_LABEL.get(o['status'], o['status'])} · {esc(fmt_date(o['created_at']))}"
+                f"<b>#{o['id']}</b> - {esc(o['plan_name'])} - {rp(o['total'])}\n   {STATUS_LABEL.get(o['status'], o['status'])} - {esc(fmt_date(o['created_at']))}"
                 for o in orders)
         await edit_or_send(query, f"{header('📜', 'Riwayat Pesanan')}\n{body}",
                            InlineKeyboardMarkup([[Btn("💎 Beli / Perpanjang", callback_data="pay_menu")],

@@ -17,7 +17,7 @@ from auth.states import clear_input_waits, waiting_qris_upload
 from client_manager import active_clients, stop_client_for_user
 from database import delete_user_qris, get_user_qris, is_subscribed, save_user_qris
 from keyboards import qris_keyboard
-from ui import LINE, edit_or_send, esc, fmt_dt, header, replace_with_photo
+from ui import edit_or_send, esc, fmt_dt, header, replace_with_photo
 from utils.helpers import escape_md
 from utils.qris import (
     MAX_AMOUNT,
@@ -113,22 +113,23 @@ def _menu_text(uid: int) -> str:
     client = active_clients.get(uid)
     session_ok = bool(client and client.is_connected())
     if saved:
-        name = esc(saved["merchant_name"])
-        city = esc(saved["merchant_city"])
-        status = f"Tersimpan ✅\n<code>Merchant   </code> {name}\n<code>Kota       </code> {city}\n<code>Diperbarui </code> {esc(fmt_dt(saved['updated_at']))}"
+        data = (
+            "Status: Tersimpan ✅\n"
+            f"Merchant: {esc(saved['merchant_name'])}\n"
+            f"Kota: {esc(saved['merchant_city'])}\n"
+            f"Diperbarui: {esc(fmt_dt(saved['updated_at']))}"
+        )
     else:
-        status = "Belum ada QRIS ❌"
-    warn = "" if session_ok else "\n\n⚠️ Session belum aktif — selesaikan <b>Setup Bot</b> dulu agar command <code>.qris</code> bisa dipakai."
+        data = "Status: Belum ada QRIS ❌"
+    warn = "" if session_ok else "\n\n⚠️ Session belum aktif. Selesaikan <b>Setup Bot</b> dulu agar command <code>.qris</code> bisa dipakai."
     return (
         f"{header('💳', 'QRIS Dinamis')}\n"
-        "Ubah <b>QRIS statis</b> tokomu menjadi <b>QRIS dinamis</b> dengan nominal otomatis — "
-        "langsung dari chat mana pun.\n\n"
-        f"<code>Status     </code> {status}\n"
-        f"{LINE}\n"
+        "Ubah <b>QRIS statis</b> tokomu menjadi <b>QRIS dinamis</b> dengan nominal otomatis, langsung dari chat mana pun.\n\n"
+        f"{data}\n\n"
         "📝 <b>Cara pakai:</b>\n"
         "<code>.qris (nominal)</code>\n\n"
         "💡 <b>Contoh:</b>\n"
-        "<code>.qris 25000</code>  ·  <code>.qris 25k</code>  ·  <code>.qris 1,5jt</code>"
+        "<code>.qris 25000</code>\n<code>.qris 25k</code>\n<code>.qris 1,5jt</code>"
         f"{warn}"
     )
 
@@ -259,7 +260,7 @@ async def handle_qris_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         note = "\n\nℹ️ QRIS ini sudah berbentuk dinamis. Tidak masalah — nominalnya akan diganti sesuai <code>.qris (nominal)</code>."
     caption = (
         f"✅ <b>QRIS tersimpan!</b>\n"
-        f"🏪 {esc(info['merchant_name'])} · {esc(info['merchant_city'])}\n\n"
+        f"🏪 {esc(info['merchant_name'])} - {esc(info['merchant_city'])}\n\n"
         "Sekarang ketik di chat mana pun:\n<code>.qris 10000</code>\n\n"
         f"Gambar di atas adalah contoh hasil untuk Rp 10.000.{note}"
     )
