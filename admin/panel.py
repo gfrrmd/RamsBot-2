@@ -22,7 +22,7 @@ from database import (
     upsert_user,
 )
 from services.session_runner import ensure_client_running
-from ui import LINE, edit_or_send, esc, fmt_date, fmt_dt, fmt_remaining, header, kv, rp, sub_badge, get_sub_state
+from ui import edit_or_send, esc, fmt_date, fmt_dt, fmt_remaining, header, kv, rp, sub_badge, get_sub_state
 
 PAGE = 8
 _bg_tasks: set = set()
@@ -40,10 +40,10 @@ def build_stats_text() -> str:
         f"{kv('Trial aktif', s['trial_active'], 13)}\n"
         f"{kv('VIP ≤ 3 hari', s['vip_expiring'], 13)}\n"
         f"{kv('VIP expired', s['vip_expired'], 13)}\n"
-        f"{kv('Session', str(s['sessions']) + ' tersimpan · ' + str(online) + ' online', 13)}\n"
+        f"{kv('Session', str(s['sessions']) + ' tersimpan - ' + str(online) + ' online', 13)}\n"
         f"{kv('QRIS user', s['qris_saved'], 13)}\n"
-        f"{LINE}\n"
-        f"🧾 Order: {s['orders_pending']} pending · {s['orders_verifying']} verifikasi · {s['orders_paid']} lunas\n"
+        "\n"
+        f"🧾 Order: {s['orders_pending']} pending - {s['orders_verifying']} verifikasi - {s['orders_paid']} lunas\n"
         f"💰 Hari ini: <b>{rp(s['revenue_today'])}</b>\n"
         f"💰 30 hari: <b>{rp(s['revenue_30d'])}</b>\n"
         f"💰 Total: <b>{rp(s['revenue_total'])}</b>\n"
@@ -56,7 +56,9 @@ def admin_home_text() -> str:
     waiting = s["orders_pending"] + s["orders_verifying"]
     return (
         f"{header('🛠️', 'Panel Admin')}\n"
-        f"👥 {s['users']} user · 💎 {s['vip_active']} VIP · 🧾 {waiting} order menunggu\n\n"
+        f"Total user: {s['users']}\n"
+        f"VIP aktif: {s['vip_active']}\n"
+        f"Order menunggu: {waiting}\n\n"
         "Pilih menu di bawah:"
     ), waiting
 
@@ -89,7 +91,7 @@ def build_user_card(user_id: int):
         f"{kv('Session', sess, 10)}\n"
         f"{kv('QRIS', 'Tersimpan ✅' if p['has_qris'] else '—', 10)}\n"
         f"{kv('Trial', 'Sudah dipakai' if p['trial_used'] else 'Belum', 10)}\n"
-        f"{kv('Order lunas', str(p['paid_orders']) + ' · ' + rp(p['paid_total']), 10)}\n"
+        f"{kv('Order lunas', str(p['paid_orders']) + ' - ' + rp(p['paid_total']), 10)}\n"
         f"{kv('Daftar', esc(fmt_date(p['created_at'])), 10)}"
     )
     kb = InlineKeyboardMarkup([
@@ -158,7 +160,7 @@ async def handle_callback(query, context, data: str) -> bool:
             name = u["full_name"] or str(u["user_id"])
             uname = f" (@{esc(u['username'])})" if u["username"] else ""
             left = get_sub_state(u["user_id"])["remaining"]
-            lines.append(f"<b>{i}.</b> {esc(name)}{uname}\n   <code>{u['user_id']}</code> · s/d {esc(fmt_date(u['expired_at']))} ({fmt_remaining(left) if left else '—'})")
+            lines.append(f"<b>{i}.</b> {esc(name)}{uname}\n   <code>{u['user_id']}</code> - s/d {esc(fmt_date(u['expired_at']))} ({fmt_remaining(left) if left else '—'})")
             btns.append(Btn(f"{i}. {name[:18]}", callback_data=f"admin_u_{u['user_id']}"))
         kb = [btns[i:i + 2] for i in range(0, len(btns), 2)]
         nav = []

@@ -25,7 +25,7 @@ from database import (
 )
 from keyboards import main_keyboard, order_admin_keyboard
 from services.session_runner import ensure_client_running
-from ui import LINE, STATUS_LABEL, edit_or_send, esc, fmt_dt, header, kv, rp, sub_badge, replace_with_photo
+from ui import STATUS_LABEL, edit_or_send, esc, fmt_dt, header, kv, rp, sub_badge, replace_with_photo
 from utils.qris import QRISError, convert_qris, parse_amount, render_qr_png, summarize_qris
 
 PAGE = 8
@@ -36,7 +36,7 @@ OPEN_STATUSES = ("pending", "verifying", "expired")
 
 def _user_line(user_id: int, name: str | None, username: str | None) -> str:
     uname = f" (@{esc(username)})" if username else ""
-    return f'<a href="tg://user?id={user_id}">{esc(name or user_id)}</a>{uname} · <code>{user_id}</code>'
+    return f'<a href="tg://user?id={user_id}">{esc(name or user_id)}</a>{uname} - <code>{user_id}</code>'
 
 
 def _order_admin_text(order: dict) -> str:
@@ -59,7 +59,7 @@ def _order_admin_text(order: dict) -> str:
 
 async def notify_admin_new_proof(bot, order: dict, user) -> None:
     caption = (
-        f"💰 <b>Pembayaran masuk — cek mutasi</b>\n\n{_order_admin_text(order)}\n{LINE}\n"
+        f"💰 <b>Pembayaran masuk — cek mutasi</b>\n\n{_order_admin_text(order)}\n\n"
         f"Pastikan dana <b>{rp(order['total'])}</b> sudah masuk, lalu tekan Approve."
     )
     kind, _, file_id = (order.get("proof_file_id") or "").partition(":")
@@ -98,7 +98,7 @@ async def approve_and_notify(bot, order_id: int, admin_id: int) -> tuple[bool, s
             f"{kv('Paket', esc(order['plan_name']), 9)}\n"
             f"{kv('Total', rp(order['total']), 9)}\n"
             f"{kv('VIP s/d', '<b>' + esc(fmt_dt(order['new_expired'])) + '</b>', 9)}\n"
-            f"{LINE}\n{extra}\n\nTerima kasih! 🙏",
+            f"\n{extra}\n\nTerima kasih! 🙏",
             parse_mode=ParseMode.HTML, reply_markup=main_keyboard(uid),
         )
         notified = ""
@@ -169,7 +169,7 @@ def build_pay_admin_text() -> str:
         f"{kv('Kode unik', 'ON ✅' if uniq_on else 'OFF ❌', 11)}\n"
         f"{kv('Batas bayar', str(_expire_minutes()) + ' menit', 11)}\n"
         f"{kv('Menunggu', str(waiting) + ' order', 11)}\n"
-        f"{LINE}\n"
+        "\n"
         f"Status toko: {'🟢 Siap menerima pesanan' if ready else '🔴 Belum siap (atur QRIS & minimal 1 paket aktif)'}\n\n"
         "ℹ️ Pembeli membayar ke QRIS dinamis (nominal otomatis). Verifikasi dilakukan manual: "
         "cek mutasi, lalu tekan <b>Approve</b> pada notifikasi bukti bayar."
@@ -200,8 +200,8 @@ async def _show_plans(query):
         lines.append("Belum ada paket. Tekan <b>Tambah Paket</b> untuk membuat.")
     for p in plans:
         mark = "✅" if p["is_active"] else "⏸️"
-        rows.append([Btn(f"{mark} {p['name']} · {p['days']}h · {rp(p['price'])}", callback_data=f"admin_plan_{p['id']}")])
-    lines.append("\n✅ = tampil di menu beli · ⏸️ = disembunyikan")
+        rows.append([Btn(f"{mark} {p['name']} - {p['days']}h - {rp(p['price'])}", callback_data=f"admin_plan_{p['id']}")])
+    lines.append("\n✅ = tampil di menu beli - ⏸️ = disembunyikan")
     rows.append([Btn("➕ Tambah Paket", callback_data="admin_plan_add")])
     rows.append([Btn("🔙 Pembayaran", callback_data="admin_pay")])
     await edit_or_send(query, "\n".join(lines), InlineKeyboardMarkup(rows))
@@ -237,7 +237,7 @@ async def _show_orders_list(query, statuses, title: str, page: int, back_cb: str
     if not orders:
         lines.append("Tidak ada order.")
     for o in orders:
-        label = f"#{o['id']} · {rp(o['total'])} · {STATUS_LABEL.get(o['status'], o['status']).split(' ', 1)[0]}"
+        label = f"#{o['id']} - {rp(o['total'])} - {STATUS_LABEL.get(o['status'], o['status']).split(' ', 1)[0]}"
         rows.append([Btn(label, callback_data=f"admin_ord_view_{o['id']}")])
     if page_cb_prefix:
         nav = []
@@ -247,7 +247,7 @@ async def _show_orders_list(query, statuses, title: str, page: int, back_cb: str
             nav.append(Btn("➡️", callback_data=f"{page_cb_prefix}{page + 1}"))
         if nav:
             rows.append(nav)
-        lines.append(f"\nHalaman {page + 1} · total {total} order")
+        lines.append(f"\nHalaman {page + 1} - total {total} order")
     rows.append([Btn("🔙 Pembayaran", callback_data=back_cb)])
     await edit_or_send(query, "\n".join(lines), InlineKeyboardMarkup(rows))
 
@@ -441,7 +441,7 @@ async def handle_state_message(update, context, state: dict) -> bool:
         except QRISError as e:
             ok_note = f"\n⚠️ Tes konversi gagal: {esc(str(e))}"
         await msg.reply_text(
-            f"✅ <b>QRIS pembayaran disimpan.</b>\n🏪 {esc(info['merchant_name'])} · {esc(info['merchant_city'])}{ok_note}",
+            f"✅ <b>QRIS pembayaran disimpan.</b>\n🏪 {esc(info['merchant_name'])} - {esc(info['merchant_city'])}{ok_note}",
             parse_mode=ParseMode.HTML, reply_markup=back_pay)
         return True
 
@@ -463,11 +463,11 @@ async def handle_state_message(update, context, state: dict) -> bool:
         name, days, price = parsed
         if action == "plan_add":
             pid = add_plan(name, days, price)
-            await msg.reply_text(f"✅ Paket <b>{esc(name)}</b> ({days} hari · {rp(price)}) ditambahkan.", parse_mode=ParseMode.HTML, reply_markup=back_plans)
+            await msg.reply_text(f"✅ Paket <b>{esc(name)}</b> ({days} hari - {rp(price)}) ditambahkan.", parse_mode=ParseMode.HTML, reply_markup=back_plans)
         else:
             pid = state["plan_id"]
             update_plan(pid, name, days, price)
-            await msg.reply_text(f"✅ Paket diperbarui: <b>{esc(name)}</b> ({days} hari · {rp(price)}).", parse_mode=ParseMode.HTML, reply_markup=back_plans)
+            await msg.reply_text(f"✅ Paket diperbarui: <b>{esc(name)}</b> ({days} hari - {rp(price)}).", parse_mode=ParseMode.HTML, reply_markup=back_plans)
         admin_state.pop(uid, None)
         return True
 

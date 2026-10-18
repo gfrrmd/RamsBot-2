@@ -88,7 +88,7 @@ async def run_backup(bot, reason: str = "auto") -> tuple[bool, str]:
         caption = (
             f"💾 <b>{'Auto Backup' if reason == 'auto' else 'Backup Manual'}</b>\n"
             f"🕒 {esc(fmt_dt(now))}\n"
-            f"🗂️ {len(counts)} tabel · {total_rows} baris · {len(data) / 1024:.1f} KB\n"
+            f"🗂️ {len(counts)} tabel - {total_rows} baris - {len(data) / 1024:.1f} KB\n"
             f"♻️ Restore: kirim file ini lewat Panel Admin → Restore DB"
         )
         targets = [ADMIN_ID]
@@ -135,16 +135,20 @@ def build_autobackup_text() -> str:
             pass
     elif on:
         nxt = "segera"
+    tujuan = "PM Admin" + (f" + channel <code>{ch}</code>" if ch else "")
+    terakhir = esc(fmt_dt(last_at)) if last_at else "—"
+    hasil = esc(status if status == "ok" else status[:80])
     return (
         f"{header('💾', 'Auto Backup')}\n"
-        f"<code>Status     </code> {'ON ✅' if on else 'OFF ❌'}\n"
-        f"<code>Interval   </code> setiap {_interval_label(get_interval_hours())}\n"
-        f"<code>Tujuan     </code> PM Admin{f' + channel <code>{ch}</code>' if ch else ''}\n"
-        f"<code>Terakhir   </code> {esc(fmt_dt(last_at)) if last_at else '—'}\n"
-        f"<code>Berikutnya </code> {esc(nxt)}\n"
-        f"<code>Hasil      </code> {esc(status if status == 'ok' else status[:80])}\n\n"
+        f"Status: {'ON ✅' if on else 'OFF ❌'}\n"
+        f"Interval: setiap {_interval_label(get_interval_hours())}\n"
+        f"Tujuan: {tujuan}\n"
+        f"Terakhir: {terakhir}\n"
+        f"Berikutnya: {esc(nxt)}\n"
+        f"Hasil: {hasil}\n\n"
         "File dikirim sebagai <code>.sql.gz</code> ke Telegram sehingga aman walau server Railway "
-        "di-redeploy. ⚠️ Backup berisi data session — jangan kirim ke channel publik."
+        "di-redeploy.\n\n"
+        "Catatan: backup berisi data session, jangan kirim ke channel publik."
     )
 
 
