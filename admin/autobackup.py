@@ -161,5 +161,5 @@ def autobackup_keyboard() -> InlineKeyboardMarkup:
         interval_row[:3],
         interval_row[3:],
         [Btn("📡 Atur Channel Tujuan", callback_data="admin_ab_channel"), Btn("📦 Backup Sekarang", callback_data="admin_ab_now")],
-        [Btn("🔙 Panel Admin", callback_data="menu_admin")],
+        [Btn("🔙 Data", callback_data="admin_data")],
     ])

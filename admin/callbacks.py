@@ -6,7 +6,7 @@ from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
-from admin import panel, payments
+from admin import data as data_menu, panel, payments
 from admin.backup import _do_backup, _split_sql_statements, fix_sequences, maybe_gunzip
 from admin.blacklist import build_blacklist_text
 from admin.gift import _do_gift
@@ -14,7 +14,7 @@ from admin.vip import _do_revoke
 from auth.states import admin_state, waiting_gift, waiting_restore, waiting_revoke
 from config import ADMIN_ID
 from database import blacklist_add, blacklist_remove
-from keyboards import admin_keyboard, blacklist_keyboard
+from keyboards import admin_keyboard, blacklist_keyboard, data_keyboard
 from ui import edit_or_send, header
 
 waiting_bl_add: set[int] = set()
@@ -52,9 +52,9 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
             sql_bytes = await _do_backup(context)
             fname = f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.sql"
             await context.bot.send_document(chat_id=uid, document=sql_bytes, filename=fname, caption="✅ Backup database berhasil!")
-            await edit_or_send(query, "✅ Backup selesai!", admin_keyboard())
+            await edit_or_send(query, "✅ Backup selesai!", data_keyboard())
         except Exception as e:
-            await edit_or_send(query, f"❌ Backup gagal: {e}", admin_keyboard())
+            await edit_or_send(query, f"❌ Backup gagal: {e}", data_keyboard())
         return
     if data == "admin_restore":
         waiting_restore.add(uid)
@@ -84,6 +84,8 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
         return
 
     # Modul baru
+    if await data_menu.handle_callback(query, context, data):
+        return
     if await payments.handle_callback(query, context, data):
         return
     await panel.handle_callback(query, context, data)
@@ -121,11 +123,11 @@ async def admin_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
                 cur.execute(stmt)
             conn.commit()
             fix_sequences(conn)
-            await msg.reply_text(f"✅ Restore berhasil! ({len(stmts)} statement dijalankan)", reply_markup=admin_keyboard())
+            await msg.reply_text(f"✅ Restore berhasil! ({len(stmts)} statement dijalankan)", reply_markup=data_keyboard())
         except Exception as e:
             if conn:
                 conn.rollback()
-            await msg.reply_text(f"❌ Restore gagal: {e}", reply_markup=admin_keyboard())
+            await msg.reply_text(f"❌ Restore gagal: {e}", reply_markup=data_keyboard())
         finally:
             if conn:
                 conn.close()
