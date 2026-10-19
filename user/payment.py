@@ -7,6 +7,7 @@ Semua pengaturan (QRIS tujuan, paket, harga) diatur admin dari Panel Admin.
 """
 import asyncio
 import random
+import re
 from datetime import datetime, timedelta
 
 from telegram import InlineKeyboardButton as Btn, InlineKeyboardMarkup, Update
@@ -32,6 +33,7 @@ from database import (
     set_order_proof,
     update_order_status,
 )
+from keyboards import nav_row, page_info
 from ui import (
     STATUS_LABEL,
     edit_or_send,
@@ -48,6 +50,8 @@ from utils.qris import QRISError, convert_qris, render_qr_png, summarize_qris
 from utils.receipt import ocr_available, sha256_hex, verify_receipt
 
 MAX_PROOF_BYTES = 10 * 1024 * 1024
+PLAN_PAGE = 5                 # paket per halaman di menu beli
+HIST_PAGE = 5                 # pesanan per halaman di riwayat
 MAX_OCR_ATTEMPTS = 3          # percobaan baca otomatis sebelum diteruskan ke admin
 
 
@@ -105,20 +109,22 @@ def _order_caption(order: dict) -> str:
 
 def _order_keyboard(order: dict) -> InlineKeyboardMarkup:
     oid = order["id"]
+    home = Btn("🏠 Menu Utama", callback_data="menu_back")
     if order["status"] == "pending":
         rows = [[Btn("📸 Kirim Bukti Bayar", callback_data=f"pay_proof_{oid}")],
-                [Btn("❌ Batalkan Pesanan", callback_data=f"pay_cancel_{oid}")]]
+                [Btn("❌ Batalkan Pesanan", callback_data=f"pay_cancel_{oid}"), home]]
     elif order["status"] == "verifying":
-        rows = [[Btn("🔁 Kirim Ulang Bukti", callback_data=f"pay_proof_{oid}")]]
+        rows = [[Btn("🔁 Kirim Ulang Bukti", callback_data=f"pay_proof_{oid}")],
+                [Btn("📜 Riwayat", callback_data="pay_history"), home]]
     else:
-        rows = [[Btn("💎 Beli Lagi", callback_data="pay_menu")]]
-    rows.append([Btn("🏠 Menu Utama", callback_data="menu_back")])
+        rows = [[Btn("💎 Beli Lagi", callback_data="pay_menu"), Btn("📜 Riwayat", callback_data="pay_history")],
+                [home]]
     return InlineKeyboardMarkup(rows)
 
 
 # ── Layar ─────────────────────────────────────────────────────────────────────
 
-async def show_pay_menu(query, uid: int):
+async def show_pay_menu(query, uid: int, page: int = 0):
     if not payment_ready():
         await edit_or_send(
             query,
@@ -129,15 +135,21 @@ async def show_pay_menu(query, uid: int):
         return
 
     plans = get_plans(active_only=True)
+    total = len(plans)
+    page = max(0, min(page, max(0, (total - 1) // PLAN_PAGE)))
     lines = [header("💎", "Beli / Perpanjang VIP"), kv("Akun kamu", sub_badge(uid), 10), ""]
     rows = []
     open_o = get_open_order(uid)
     if open_o:
         rows.append([Btn(f"🧾 Lanjutkan Pesanan #{open_o['id']} - {rp(open_o['total'])}", callback_data=f"pay_view_{open_o['id']}")])
     lines.append("📦 <b>Pilih paket:</b>")
-    for p in plans:
+    for p in plans[page * PLAN_PAGE:(page + 1) * PLAN_PAGE]:
         lines.append(f"• <b>{esc(p['name'])}</b> — {p['days']} hari — {rp(p['price'])}")
         rows.append([Btn(f"💎 {p['name']} - {rp(p['price'])}", callback_data=f"pay_plan_{p['id']}")])
+    nav = nav_row("pay_menu_", page, total, PLAN_PAGE)
+    if nav:
+        rows.append(nav)
+        lines.append(f"\n{page_info(page, total, PLAN_PAGE)}")
     lines += [
         "",
         "ℹ️ Perpanjang sebelum habis → sisa hari <b>otomatis ditambahkan</b>.",
@@ -203,25 +215,34 @@ async def payment_callback_handler(update: Update, context: ContextTypes.DEFAULT
 
     clear_input_waits(uid)
 
-    if data == "pay_menu":
-        await show_pay_menu(query, uid)
+    m = re.fullmatch(r"pay_menu(?:_(\d+))?", data)
+    if m:
+        await show_pay_menu(query, uid, int(m.group(1) or 0))
         return
 
     if data.startswith("pay_plan_"):
         await _create_order_flow(query, uid, int(data[len("pay_plan_"):]))
         return
 
-    if data == "pay_history":
-        orders = get_user_orders(uid, 8)
+    m = re.fullmatch(r"pay_history(?:_(\d+))?", data)
+    if m:
+        all_orders = get_user_orders(uid, 200)
+        total = len(all_orders)
+        page = max(0, min(int(m.group(1) or 0), max(0, (total - 1) // HIST_PAGE)))
+        orders = all_orders[page * HIST_PAGE:(page + 1) * HIST_PAGE]
         if not orders:
             body = "Belum ada pesanan."
         else:
             body = "\n".join(
                 f"<b>#{o['id']}</b> - {esc(o['plan_name'])} - {rp(o['total'])}\n   {STATUS_LABEL.get(o['status'], o['status'])} - {esc(fmt_date(o['created_at']))}"
                 for o in orders)
-        await edit_or_send(query, f"{header('📜', 'Riwayat Pesanan')}\n{body}",
-                           InlineKeyboardMarkup([[Btn("💎 Beli / Perpanjang", callback_data="pay_menu")],
-                                                 [Btn("🏠 Menu Utama", callback_data="menu_back")]]))
+        rows = []
+        nav = nav_row("pay_history_", page, total, HIST_PAGE)
+        if nav:
+            rows.append(nav)
+            body += f"\n\n{page_info(page, total, HIST_PAGE)}"
+        rows.append([Btn("💎 Beli / Perpanjang", callback_data="pay_menu"), Btn("🏠 Menu Utama", callback_data="menu_back")])
+        await edit_or_send(query, f"{header('📜', 'Riwayat Pesanan')}\n{body}", InlineKeyboardMarkup(rows))
         return
 
     # Aksi pada order tertentu
