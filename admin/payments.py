@@ -7,7 +7,9 @@ from telegram.constants import ParseMode
 
 from auth.states import admin_state
 from config import ADMIN_ID
+from client_manager import stop_client_for_user
 from database import (
+    add_manual_only_user,
     add_plan,
     approve_order,
     count_orders,
@@ -18,6 +20,7 @@ from database import (
     get_setting,
     get_user_profile,
     list_orders,
+    revoke_paid_order,
     set_plan_active,
     set_setting,
     update_order_status,
@@ -27,6 +30,7 @@ from keyboards import main_keyboard, order_admin_keyboard
 from services.session_runner import ensure_client_running
 from ui import STATUS_LABEL, edit_or_send, esc, fmt_dt, header, kv, rp, sub_badge, replace_with_photo
 from utils.qris import QRISError, convert_qris, parse_amount, render_qr_png, summarize_qris
+from utils.receipt import ocr_available
 
 PAGE = 8
 OPEN_STATUSES = ("pending", "verifying", "expired")
@@ -54,16 +58,15 @@ def _order_admin_text(order: dict) -> str:
     ]
     if order.get("paid_at"):
         lines.append(kv("Lunas", esc(fmt_dt(order["paid_at"])), 9))
+    if order.get("verified_by"):
+        lines.append(kv("Verifikasi", "🤖 Otomatis (OCR)" if order["verified_by"] == "auto" else "👤 Admin", 9))
+    if order.get("verify_note"):
+        lines.append(kv("Catatan", esc(order["verify_note"]), 9))
     return "\n".join(lines)
 
 
-async def notify_admin_new_proof(bot, order: dict, user) -> None:
-    caption = (
-        f"💰 <b>Pembayaran masuk — cek mutasi</b>\n\n{_order_admin_text(order)}\n\n"
-        f"Pastikan dana <b>{rp(order['total'])}</b> sudah masuk, lalu tekan Approve."
-    )
+async def _send_proof(bot, order: dict, caption: str, kb) -> None:
     kind, _, file_id = (order.get("proof_file_id") or "").partition(":")
-    kb = order_admin_keyboard(order["id"])
     try:
         if kind == "document":
             await bot.send_document(ADMIN_ID, file_id, caption=caption, parse_mode=ParseMode.HTML, reply_markup=kb)
@@ -77,10 +80,33 @@ async def notify_admin_new_proof(bot, order: dict, user) -> None:
             pass
 
 
+async def notify_admin_new_proof(bot, order: dict, user, note: str | None = None) -> None:
+    """Bukti masuk yang perlu diputuskan admin (mode manual, atau OCR meneruskan karena ada kejanggalan)."""
+    # Catatan sudah tampil di kartu order (verify_note); tampilkan tegas hanya bila belum tersimpan di sana.
+    extra = f"\n⚠️ <b>Catatan sistem:</b> {esc(note)}\n" if note and note != order.get("verify_note") else ""
+    caption = (
+        f"💰 <b>Pembayaran masuk — cek mutasi</b>\n\n{_order_admin_text(order)}\n{extra}\n"
+        f"Pastikan dana <b>{rp(order['total'])}</b> sudah masuk, lalu tekan Approve."
+    )
+    await _send_proof(bot, order, caption, order_admin_keyboard(order["id"]))
+
+
+async def notify_admin_auto_approved(bot, order: dict, note: str) -> None:
+    """Laporan tiap persetujuan otomatis, lengkap dengan tombol pembatalan jika ternyata curang."""
+    caption = (
+        f"🤖 <b>Disetujui otomatis (OCR)</b>\n\n{_order_admin_text(order)}\n\n"
+        f"Hasil baca: {esc(note)}\n\n"
+        "Cocokkan dengan mutasi bila perlu. Jika bukti terindikasi palsu, batalkan langganan di bawah."
+    )
+    kb = InlineKeyboardMarkup([[Btn("🚫 Batalkan Langganan", callback_data=f"admin_ord_rv_{order['id']}")]])
+    await _send_proof(bot, order, caption, kb)
+
+
 # ── Approve / tolak ───────────────────────────────────────────────────────────
 
-async def approve_and_notify(bot, order_id: int, admin_id: int) -> tuple[bool, str]:
-    order = approve_order(order_id, admin_id)
+async def approve_and_notify(bot, order_id: int, admin_id: int, verified_by: str = "admin",
+                             note: str | None = None) -> tuple[bool, str]:
+    order = approve_order(order_id, admin_id, verified_by, note)
     if not order:
         return False, "Order sudah diproses sebelumnya (atau tidak ditemukan)."
     uid = order["user_id"]
@@ -126,6 +152,40 @@ async def reject_and_notify(bot, order_id: int, admin_id: int) -> tuple[bool, st
     return True, f"Order #{order_id} ditolak."
 
 
+async def revoke_and_notify(bot, order_id: int, admin_id: int, block_auto: bool) -> tuple[bool, str]:
+    """Batalkan order lunas: kurangi masa VIP sebesar paket order ini; nonaktif bila habis."""
+    order = revoke_paid_order(order_id, admin_id)
+    if not order:
+        return False, "Order tidak berstatus Lunas (sudah dibatalkan atau tidak ditemukan)."
+    uid = order["user_id"]
+    if block_auto:
+        add_manual_only_user(uid)
+    if order["deactivated"]:
+        await stop_client_for_user(uid)
+        hasil = "VIP dinonaktifkan (sisa masa VIP habis setelah dikurangi)."
+        user_txt = "Langgananmu dinonaktifkan."
+    elif order["new_expired"]:
+        hasil = f"Masa VIP dikurangi {order['days']} hari, kini sampai {fmt_dt(order['new_expired'])}."
+        user_txt = f"Masa VIP dikurangi {order['days']} hari."
+    else:
+        hasil = "Order dibatalkan (user tidak memiliki langganan VIP aktif)."
+        user_txt = ""
+    from config import ADMIN_CONTACT
+    try:
+        await bot.send_message(
+            uid,
+            f"{header('⛔', 'Pembayaran Dibatalkan')}\nPesanan <b>#{order_id}</b> dibatalkan oleh admin karena "
+            f"pembayaran tidak dapat divalidasi. {esc(user_txt)}\n"
+            f"Jika kamu merasa ini keliru, hubungi admin {esc(ADMIN_CONTACT)} dengan bukti transfer asli.",
+            parse_mode=ParseMode.HTML,
+        )
+    except Exception:
+        hasil += " (notifikasi ke user gagal dikirim)"
+    if block_auto:
+        hasil += " Pembayaran user ini selanjutnya wajib diverifikasi manual."
+    return True, hasil
+
+
 async def _append_status(query, line: str, back_cb: str = "admin_pay") -> None:
     """Tambahkan status di pesan order (caption foto / teks) & hapus tombol aksi."""
     m = query.message
@@ -162,27 +222,41 @@ def build_pay_admin_text() -> str:
     uniq_on = get_setting("pay_unique", "1") == "1"
     waiting = count_orders(("pending", "verifying"))
     paket = str(len(active)) + " dari " + str(len(plans))
+    auto_on = get_setting("pay_auto", "0") == "1"
+    if auto_on and not ocr_available():
+        auto_txt = "ON ⚠️ (library OCR belum terpasang → otomatis jatuh ke manual)"
+    else:
+        auto_txt = "ON ✅" if auto_on else "OFF ❌"
     return (
         f"{header('💳', 'Pengaturan Pembayaran')}\n"
         f"{kv('QRIS bayar', qris_line, 11)}\n"
         f"{kv('Paket aktif', paket, 11)}\n"
         f"{kv('Kode unik', 'ON ✅' if uniq_on else 'OFF ❌', 11)}\n"
         f"{kv('Batas bayar', str(_expire_minutes()) + ' menit', 11)}\n"
+        f"{kv('Auto-verifikasi', auto_txt, 11)}\n"
         f"{kv('Menunggu', str(waiting) + ' order', 11)}\n"
         "\n"
         f"Status toko: {'🟢 Siap menerima pesanan' if ready else '🔴 Belum siap (atur QRIS & minimal 1 paket aktif)'}\n\n"
-        "ℹ️ Pembeli membayar ke QRIS dinamis (nominal otomatis). Verifikasi dilakukan manual: "
-        "cek mutasi, lalu tekan <b>Approve</b> pada notifikasi bukti bayar."
+        "ℹ️ Pembeli membayar ke QRIS dinamis (nominal otomatis).\n"
+        + ("Auto-verifikasi <b>ON</b>: bot membaca nominal (dan tanggal/jam bila terlihat) pada screenshot; "
+           "jika cocok, VIP aktif otomatis dan kamu menerima laporan + tombol pembatalan. "
+           "Kasus janggal diteruskan ke admin."
+           if auto_on else
+           "Auto-verifikasi <b>OFF</b>: cek mutasi, lalu tekan <b>Approve</b> pada notifikasi bukti bayar.")
     )
 
 
 def pay_admin_keyboard() -> InlineKeyboardMarkup:
     uniq = get_setting("pay_unique", "1") == "1"
+    auto = get_setting("pay_auto", "0") == "1"
+    auto_n = count_orders(None, verified_by="auto")
     pending = count_orders(("pending", "verifying"))
     return InlineKeyboardMarkup([
         [Btn("🧾 Set QRIS Bayar", callback_data="admin_pay_setqris"), Btn("👁️ Lihat QRIS", callback_data="admin_pay_viewqris")],
         [Btn("📦 Kelola Paket", callback_data="admin_plans")],
         [Btn(f"🔢 Kode Unik: {'ON ✅' if uniq else 'OFF ❌'}", callback_data="admin_pay_uniq"), Btn("⏱️ Batas Waktu", callback_data="admin_pay_exp")],
+        [Btn(f"🤖 Auto-Verifikasi: {'ON ✅' if auto else 'OFF ❌'}", callback_data="admin_pay_auto")],
+        [Btn(f"🧾 Riwayat Auto ({auto_n})", callback_data="admin_orders_auto_0")],
         [Btn(f"🕓 Order Pending ({pending})", callback_data="admin_orders_pending"), Btn("📜 Riwayat", callback_data="admin_orders_hist_0")],
         [Btn("🔙 Panel Admin", callback_data="menu_admin")],
     ])
@@ -229,9 +303,10 @@ async def _show_plan(query, plan_id: int):
     await edit_or_send(query, text, kb)
 
 
-async def _show_orders_list(query, statuses, title: str, page: int, back_cb: str, page_cb_prefix: str | None):
-    total = count_orders(statuses)
-    orders = list_orders(statuses, PAGE, page * PAGE)
+async def _show_orders_list(query, statuses, title: str, page: int, back_cb: str, page_cb_prefix: str | None,
+                            verified_by: str | None = None):
+    total = count_orders(statuses, verified_by=verified_by)
+    orders = list_orders(statuses, PAGE, page * PAGE, verified_by=verified_by)
     lines = [header("🧾", title)]
     rows = []
     if not orders:
@@ -261,6 +336,8 @@ async def _show_order(query, context, order_id: int):
     rows = []
     if order["status"] in OPEN_STATUSES:
         rows.append([Btn("✅ Approve", callback_data=f"admin_ord_ok_{order_id}"), Btn("❌ Tolak", callback_data=f"admin_ord_no_{order_id}")])
+    elif order["status"] == "paid":
+        rows.append([Btn("🚫 Batalkan Langganan", callback_data=f"admin_ord_rv_{order_id}")])
     rows.append([Btn("🔙 Order Pending", callback_data="admin_orders_pending"), Btn("💳 Pembayaran", callback_data="admin_pay")])
     kb = InlineKeyboardMarkup(rows)
     kind, _, file_id = (order.get("proof_file_id") or "").partition(":")
@@ -314,6 +391,17 @@ async def handle_callback(query, context, data: str) -> bool:
 
     if data == "admin_pay_uniq":
         set_setting("pay_unique", "0" if get_setting("pay_unique", "1") == "1" else "1")
+        await show_pay_admin(query)
+        return True
+
+    if data == "admin_pay_auto":
+        if get_setting("pay_auto", "0") == "1":
+            set_setting("pay_auto", "0")
+        elif not ocr_available():
+            await query.answer("Library OCR belum terpasang (pip install -r requirements.txt). "
+                               "Auto-verifikasi tidak bisa diaktifkan.", show_alert=True)
+        else:
+            set_setting("pay_auto", "1")
         await show_pay_admin(query)
         return True
 
@@ -382,16 +470,43 @@ async def handle_callback(query, context, data: str) -> bool:
         await _show_orders_list(query, ("pending", "verifying"), "Order Menunggu", 0, "admin_pay", None)
         return True
 
+    m = re.fullmatch(r"admin_orders_auto_(\d+)", data)
+    if m:
+        await _show_orders_list(query, None, "Riwayat Auto-Verifikasi", int(m.group(1)), "admin_pay",
+                                "admin_orders_auto_", verified_by="auto")
+        return True
+
     m = re.fullmatch(r"admin_orders_hist_(\d+)", data)
     if m:
         await _show_orders_list(query, None, "Riwayat Order", int(m.group(1)), "admin_pay", "admin_orders_hist_")
         return True
 
-    m = re.fullmatch(r"admin_ord_(view|ok|no)_(\d+)", data)
+    m = re.fullmatch(r"admin_ord_(view|ok|no|rv|rvok|rvblk)_(\d+)", data)
     if m:
         action, oid = m.group(1), int(m.group(2))
         if action == "view":
             await _show_order(query, context, oid)
+        elif action == "rv":
+            order = get_order(oid)
+            if not order or order["status"] != "paid":
+                await query.answer("Order tidak berstatus Lunas.", show_alert=True)
+                return True
+            await edit_or_send(
+                query,
+                f"{header('🚫', 'Batalkan Langganan?')}\n{_order_admin_text(order)}\n\n"
+                f"Order ini ditandai <b>Dicabut</b> dan masa VIP user <b>dikurangi {order['days']} hari</b> "
+                "(pembelian sah lain tidak terpengaruh). Jika sisa masa VIP habis, langganan dinonaktifkan "
+                "dan session dihentikan.\n\n"
+                "<b>Batalkan + wajib manual</b> juga membuat semua pembayaran user ini ke depan "
+                "tidak lagi diverifikasi otomatis.",
+                InlineKeyboardMarkup([
+                    [Btn("🚫 Batalkan", callback_data=f"admin_ord_rvok_{oid}")],
+                    [Btn("🚫 Batalkan + wajib manual", callback_data=f"admin_ord_rvblk_{oid}")],
+                    [Btn("↩️ Kembali", callback_data=f"admin_ord_view_{oid}")],
+                ]))
+        elif action in ("rvok", "rvblk"):
+            ok, info = await revoke_and_notify(context.bot, oid, uid, block_auto=(action == "rvblk"))
+            await _append_status(query, f"{'⛔ Dibatalkan' if ok else '⚠️'} — {esc(info)}")
         elif action == "ok":
             ok, info = await approve_and_notify(context.bot, oid, uid)
             await _append_status(query, f"{'✅ Disetujui' if ok else '⚠️'} — {esc(info)}")
