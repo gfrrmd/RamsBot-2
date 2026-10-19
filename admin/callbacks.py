@@ -2,7 +2,7 @@ import gzip
 import io
 from datetime import datetime
 
-from telegram import Update
+from telegram import InlineKeyboardButton as Btn, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
@@ -14,13 +14,17 @@ from admin.vip import _do_revoke
 from auth.states import admin_state, waiting_gift, waiting_restore, waiting_revoke
 from config import ADMIN_ID
 from database import blacklist_add, blacklist_remove
-from keyboards import admin_keyboard, blacklist_keyboard, data_keyboard
+from keyboards import admin_keyboard, blacklist_keyboard, data_keyboard, users_keyboard
 from ui import edit_or_send, header
 
 waiting_bl_add: set[int] = set()
 waiting_bl_remove: set[int] = set()
 
 HTML = ParseMode.HTML
+
+
+def _cancel_kb(back_cb: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[Btn("❌ Batal", callback_data=back_cb)]])
 
 
 def _clear_admin_waits(uid: int):
@@ -58,26 +62,26 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
         return
     if data == "admin_restore":
         waiting_restore.add(uid)
-        await edit_or_send(query, f"{header('♻️', 'Restore Database')}\nKirim file <code>.sql</code> atau <code>.sql.gz</code> backup kamu sekarang.\nAtau ketik /cancel untuk batal.")
+        await edit_or_send(query, f"{header('♻️', 'Restore Database')}\nKirim file <code>.sql</code> atau <code>.sql.gz</code> backup kamu sekarang.\nAtau ketik /cancel untuk batal.", _cancel_kb("admin_data"))
         return
     if data == "admin_gift":
         waiting_gift.add(uid)
-        await edit_or_send(query, f"{header('🎁', 'Gift VIP')}\nKirim: <code>&lt;user_id atau @username&gt; &lt;jumlah_hari&gt;</code>\nContoh: <code>123456789 30</code>\n\nAtau ketik /cancel untuk batal.")
+        await edit_or_send(query, f"{header('🎁', 'Gift VIP')}\nKirim: <code>&lt;user_id atau @username&gt; &lt;jumlah_hari&gt;</code>\nContoh: <code>123456789 30</code>\n\nAtau ketik /cancel untuk batal.", _cancel_kb("admin_users"))
         return
     if data == "admin_revoke":
         waiting_revoke.add(uid)
-        await edit_or_send(query, f"{header('🚫', 'Revoke VIP')}\nKirim user ID atau @username yang ingin dicabut VIP-nya.\nAtau ketik /cancel untuk batal.")
+        await edit_or_send(query, f"{header('🚫', 'Revoke VIP')}\nKirim user ID atau @username yang ingin dicabut VIP-nya.\nAtau ketik /cancel untuk batal.", _cancel_kb("admin_users"))
         return
     if data == "admin_blacklist":
         await edit_or_send(query, f"{header('🔒', 'Blacklist Channel')}\nKelola daftar channel/grup yang diblokir dari <code>.copy</code>", blacklist_keyboard())
         return
     if data == "bl_add":
         waiting_bl_add.add(uid)
-        await edit_or_send(query, f"{header('➕', 'Tambah ke Blacklist')}\nKirim username atau ID channel.\nFormat: <code>@username</code> atau <code>-100xxxxxxxxxx</code>\nBisa tambah catatan: <code>@username alasan</code>\n\nKetik /cancel untuk batal.")
+        await edit_or_send(query, f"{header('➕', 'Tambah ke Blacklist')}\nKirim username atau ID channel.\nFormat: <code>@username</code> atau <code>-100xxxxxxxxxx</code>\nBisa tambah catatan: <code>@username alasan</code>\n\nKetik /cancel untuk batal.", _cancel_kb("admin_blacklist"))
         return
     if data == "bl_remove":
         waiting_bl_remove.add(uid)
-        await edit_or_send(query, f"{header('➖', 'Hapus dari Blacklist')}\nKirim username atau ID channel yang ingin dihapus.\nKetik /cancel untuk batal.")
+        await edit_or_send(query, f"{header('➖', 'Hapus dari Blacklist')}\nKirim username atau ID channel yang ingin dihapus.\nKetik /cancel untuk batal.", _cancel_kb("admin_blacklist"))
         return
     if data == "bl_list":
         await edit_or_send(query, build_blacklist_text(), blacklist_keyboard())
@@ -142,7 +146,7 @@ async def admin_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
             return
         days = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 30
         ok, text = await _do_gift(parts[0], days, context)
-        await msg.reply_text(text, reply_markup=admin_keyboard())
+        await msg.reply_text(text, reply_markup=users_keyboard())
         return
 
     if uid in waiting_revoke:
@@ -153,7 +157,7 @@ async def admin_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
             waiting_revoke.add(uid)
             return
         ok, text = await _do_revoke(text, context)
-        await msg.reply_text(text, reply_markup=admin_keyboard())
+        await msg.reply_text(text, reply_markup=users_keyboard())
         return
 
     if uid in waiting_bl_add:

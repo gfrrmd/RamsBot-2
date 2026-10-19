@@ -26,7 +26,7 @@ from database import (
     update_order_status,
     update_plan,
 )
-from keyboards import main_keyboard, order_admin_keyboard
+from keyboards import main_keyboard, nav_row, order_admin_keyboard, page_info
 from services.session_runner import ensure_client_running
 from ui import STATUS_LABEL, edit_or_send, esc, fmt_dt, header, kv, rp, sub_badge, replace_with_photo
 from utils.qris import QRISError, convert_qris, parse_amount, render_qr_png, summarize_qris
@@ -209,7 +209,7 @@ def _expire_minutes() -> int:
         return 60
 
 
-def build_pay_admin_text() -> str:
+def build_pay_admin_text(settings: bool = False) -> str:
     static = get_setting("pay_qris")
     plans = get_plans()
     active = [p for p in plans if p["is_active"]]
@@ -228,7 +228,7 @@ def build_pay_admin_text() -> str:
     if not ocr_ok:
         auto_txt += " — ⚠️ OCR tidak tersedia, semua bukti diverifikasi manual"
     return (
-        f"{header('💳', 'Pengaturan Pembayaran')}\n"
+        f"{header('⚙️' if settings else '💳', 'Pengaturan Pembayaran' if settings else 'Pembayaran')}\n"
         f"{kv('QRIS bayar', qris_line, 11)}\n"
         f"{kv('Paket aktif', paket, 11)}\n"
         f"{kv('Kode unik', 'ON ✅' if uniq_on else 'OFF ❌', 11)}\n"
@@ -248,18 +248,36 @@ def build_pay_admin_text() -> str:
 
 
 def pay_admin_keyboard() -> InlineKeyboardMarkup:
+    """Menu utama Pembayaran: 3 kategori (Pesanan, Paket, Pengaturan)."""
+    pending = count_orders(("pending", "verifying"))
+    return InlineKeyboardMarkup([
+        [Btn(f"🧾 Pesanan ({pending})" if pending else "🧾 Pesanan", callback_data="admin_pay_orders"),
+         Btn("📦 Kelola Paket", callback_data="admin_plans")],
+        [Btn("⚙️ Pengaturan", callback_data="admin_pay_settings")],
+        [Btn("🔙 Panel Admin", callback_data="menu_admin")],
+    ])
+
+
+def pay_settings_keyboard() -> InlineKeyboardMarkup:
+    """Kategori Pengaturan: QRIS, kode unik, batas waktu, auto-verifikasi."""
     uniq = get_setting("pay_unique", "1") == "1"
     auto = get_setting("pay_auto", "0") == "1"
+    return InlineKeyboardMarkup([
+        [Btn("🧾 Set QRIS Bayar", callback_data="admin_pay_setqris"), Btn("👁️ Lihat QRIS", callback_data="admin_pay_viewqris")],
+        [Btn(f"🔢 Kode Unik: {'ON ✅' if uniq else 'OFF ❌'}", callback_data="admin_pay_uniq"), Btn("⏱️ Batas Waktu", callback_data="admin_pay_exp")],
+        [Btn(f"🤖 Auto-Verifikasi: {'ON ✅' if auto else 'OFF ❌'}", callback_data="admin_pay_auto")],
+        [Btn("🔙 Pembayaran", callback_data="admin_pay")],
+    ])
+
+
+def pay_orders_keyboard() -> InlineKeyboardMarkup:
+    """Kategori Pesanan: menunggu, semua riwayat, riwayat auto-verifikasi."""
     auto_n = count_orders(None, verified_by="auto")
     pending = count_orders(("pending", "verifying"))
     return InlineKeyboardMarkup([
-        [Btn("🧾 Set QRIS Bayar", callback_data="admin_pay_setqris"), Btn("👁️ Lihat QRIS", callback_data="admin_pay_viewqris")],
-        [Btn("📦 Kelola Paket", callback_data="admin_plans")],
-        [Btn(f"🔢 Kode Unik: {'ON ✅' if uniq else 'OFF ❌'}", callback_data="admin_pay_uniq"), Btn("⏱️ Batas Waktu", callback_data="admin_pay_exp")],
-        [Btn(f"🤖 Auto-Verifikasi: {'ON ✅' if auto else 'OFF ❌'}", callback_data="admin_pay_auto")],
-        [Btn(f"🧾 Riwayat Auto ({auto_n})", callback_data="admin_orders_auto_0")],
-        [Btn(f"🕓 Order Pending ({pending})", callback_data="admin_orders_pending"), Btn("📜 Riwayat", callback_data="admin_orders_hist_0")],
-        [Btn("🔙 Panel Admin", callback_data="menu_admin")],
+        [Btn(f"🕓 Menunggu ({pending})", callback_data="admin_orders_pending_0"), Btn("📜 Semua Riwayat", callback_data="admin_orders_hist_0")],
+        [Btn(f"🤖 Riwayat Auto ({auto_n})", callback_data="admin_orders_auto_0")],
+        [Btn("🔙 Pembayaran", callback_data="admin_pay")],
     ])
 
 
@@ -267,16 +285,39 @@ async def show_pay_admin(query):
     await edit_or_send(query, build_pay_admin_text(), pay_admin_keyboard())
 
 
-async def _show_plans(query):
+async def show_pay_settings(query):
+    await edit_or_send(query, build_pay_admin_text(settings=True), pay_settings_keyboard())
+
+
+async def show_pay_orders(query):
+    waiting = count_orders(("pending", "verifying"))
+    text = (
+        f"{header('🧾', 'Pesanan')}\n"
+        f"Menunggu: {waiting} order\n"
+        f"Total riwayat: {count_orders(None)} order\n\n"
+        "🕓 <b>Menunggu</b> - perlu dicek/diputuskan\n"
+        "📜 <b>Semua Riwayat</b> - seluruh order\n"
+        "🤖 <b>Riwayat Auto</b> - disetujui otomatis (OCR)"
+    )
+    await edit_or_send(query, text, pay_orders_keyboard())
+
+
+async def _show_plans(query, page: int = 0):
     plans = get_plans()
+    total = len(plans)
+    page = max(0, min(page, max(0, (total - 1) // PAGE)))
     lines = [header("📦", "Kelola Paket VIP")]
     rows = []
     if not plans:
         lines.append("Belum ada paket. Tekan <b>Tambah Paket</b> untuk membuat.")
-    for p in plans:
+    for p in plans[page * PAGE:(page + 1) * PAGE]:
         mark = "✅" if p["is_active"] else "⏸️"
         rows.append([Btn(f"{mark} {p['name']} - {p['days']}h - {rp(p['price'])}", callback_data=f"admin_plan_{p['id']}")])
     lines.append("\n✅ = tampil di menu beli - ⏸️ = disembunyikan")
+    nav = nav_row("admin_plans_", page, total, PAGE)
+    if nav:
+        rows.append(nav)
+        lines.append(page_info(page, total, PAGE))
     rows.append([Btn("➕ Tambah Paket", callback_data="admin_plan_add")])
     rows.append([Btn("🔙 Pembayaran", callback_data="admin_pay")])
     await edit_or_send(query, "\n".join(lines), InlineKeyboardMarkup(rows))
@@ -316,15 +357,11 @@ async def _show_orders_list(query, statuses, title: str, page: int, back_cb: str
         label = f"#{o['id']} - {rp(o['total'])} - {STATUS_LABEL.get(o['status'], o['status']).split(' ', 1)[0]}"
         rows.append([Btn(label, callback_data=f"admin_ord_view_{o['id']}")])
     if page_cb_prefix:
-        nav = []
-        if page > 0:
-            nav.append(Btn("⬅️", callback_data=f"{page_cb_prefix}{page - 1}"))
-        if (page + 1) * PAGE < total:
-            nav.append(Btn("➡️", callback_data=f"{page_cb_prefix}{page + 1}"))
+        nav = nav_row(page_cb_prefix, page, total, PAGE)
         if nav:
             rows.append(nav)
-        lines.append(f"\nHalaman {page + 1} - total {total} order")
-    rows.append([Btn("🔙 Pembayaran", callback_data=back_cb)])
+        lines.append(f"\n{page_info(page, total, PAGE)} - total {total} order")
+    rows.append([Btn("🔙 Pesanan", callback_data=back_cb)])
     await edit_or_send(query, "\n".join(lines), InlineKeyboardMarkup(rows))
 
 
@@ -339,7 +376,7 @@ async def _show_order(query, context, order_id: int):
         rows.append([Btn("✅ Approve", callback_data=f"admin_ord_ok_{order_id}"), Btn("❌ Tolak", callback_data=f"admin_ord_no_{order_id}")])
     elif order["status"] == "paid":
         rows.append([Btn("🚫 Batalkan Langganan", callback_data=f"admin_ord_rv_{order_id}")])
-    rows.append([Btn("🔙 Order Pending", callback_data="admin_orders_pending"), Btn("💳 Pembayaran", callback_data="admin_pay")])
+    rows.append([Btn("🔙 Pesanan", callback_data="admin_pay_orders"), Btn("💳 Pembayaran", callback_data="admin_pay")])
     kb = InlineKeyboardMarkup(rows)
     kind, _, file_id = (order.get("proof_file_id") or "").partition(":")
     if file_id and kind == "photo":
@@ -369,13 +406,21 @@ async def handle_callback(query, context, data: str) -> bool:
         await show_pay_admin(query)
         return True
 
+    if data == "admin_pay_settings":
+        await show_pay_settings(query)
+        return True
+
+    if data == "admin_pay_orders":
+        await show_pay_orders(query)
+        return True
+
     if data == "admin_pay_setqris":
         admin_state[uid] = {"action": "pay_qris"}
         await edit_or_send(
             query,
             f"{header('🧾', 'Set QRIS Pembayaran')}\nKirim <b>gambar QRIS statis</b> milikmu (tempat menerima uang pembayaran VIP), "
             "atau tempel kode QRIS-nya (diawali <code>000201</code>).\n\nKetik /cancel untuk batal.",
-            InlineKeyboardMarkup([[Btn("❌ Batal", callback_data="admin_pay")]]),
+            InlineKeyboardMarkup([[Btn("❌ Batal", callback_data="admin_pay_settings")]]),
         )
         return True
 
@@ -387,12 +432,12 @@ async def handle_callback(query, context, data: str) -> bool:
         info = summarize_qris(static)
         png = await asyncio.to_thread(render_qr_png, static, "QRIS Pembayaran", info["merchant_name"])
         await replace_with_photo(query, png, f"🏪 <b>{esc(info['merchant_name'])}</b>\n{esc(info['merchant_city'])}",
-                                 InlineKeyboardMarkup([[Btn("🔙 Pembayaran", callback_data="admin_pay")]]))
+                                 InlineKeyboardMarkup([[Btn("🔙 Pengaturan", callback_data="admin_pay_settings")]]))
         return True
 
     if data == "admin_pay_uniq":
         set_setting("pay_unique", "0" if get_setting("pay_unique", "1") == "1" else "1")
-        await show_pay_admin(query)
+        await show_pay_settings(query)
         return True
 
     if data == "admin_pay_auto":
@@ -402,7 +447,7 @@ async def handle_callback(query, context, data: str) -> bool:
             pass            # alasan ditampilkan di panel (query sudah di-answer oleh handler induk)
         else:
             set_setting("pay_auto", "1")
-        await show_pay_admin(query)
+        await show_pay_settings(query)
         return True
 
     if data == "admin_pay_exp":
@@ -411,13 +456,14 @@ async def handle_callback(query, context, data: str) -> bool:
             query,
             f"{header('⏱️', 'Batas Waktu Pembayaran')}\nSaat ini: <b>{_expire_minutes()} menit</b>.\n\n"
             "Kirim angka menit baru (5 – 1440). Contoh: <code>30</code>\n\nKetik /cancel untuk batal.",
-            InlineKeyboardMarkup([[Btn("❌ Batal", callback_data="admin_pay")]]),
+            InlineKeyboardMarkup([[Btn("❌ Batal", callback_data="admin_pay_settings")]]),
         )
         return True
 
     # ── paket ──
-    if data == "admin_plans":
-        await _show_plans(query)
+    m = re.fullmatch(r"admin_plans(?:_(\d+))?", data)
+    if m:
+        await _show_plans(query, int(m.group(1) or 0))
         return True
 
     if data == "admin_plan_add":
@@ -466,19 +512,21 @@ async def handle_callback(query, context, data: str) -> bool:
         return True
 
     # ── order ──
-    if data == "admin_orders_pending":
-        await _show_orders_list(query, ("pending", "verifying"), "Order Menunggu", 0, "admin_pay", None)
+    m = re.fullmatch(r"admin_orders_pending(?:_(\d+))?", data)
+    if m:
+        await _show_orders_list(query, ("pending", "verifying"), "Order Menunggu", int(m.group(1) or 0),
+                                "admin_pay_orders", "admin_orders_pending_")
         return True
 
     m = re.fullmatch(r"admin_orders_auto_(\d+)", data)
     if m:
-        await _show_orders_list(query, None, "Riwayat Auto-Verifikasi", int(m.group(1)), "admin_pay",
+        await _show_orders_list(query, None, "Riwayat Auto-Verifikasi", int(m.group(1)), "admin_pay_orders",
                                 "admin_orders_auto_", verified_by="auto")
         return True
 
     m = re.fullmatch(r"admin_orders_hist_(\d+)", data)
     if m:
-        await _show_orders_list(query, None, "Riwayat Order", int(m.group(1)), "admin_pay", "admin_orders_hist_")
+        await _show_orders_list(query, None, "Riwayat Order", int(m.group(1)), "admin_pay_orders", "admin_orders_hist_")
         return True
 
     m = re.fullmatch(r"admin_ord_(view|ok|no|rv|rvok|rvblk)_(\d+)", data)
@@ -538,7 +586,7 @@ async def handle_state_message(update, context, state: dict) -> bool:
     msg = update.effective_message
     uid = update.effective_user.id
     text = (msg.text or "").strip()
-    back_pay = InlineKeyboardMarkup([[Btn("💳 Pembayaran", callback_data="admin_pay")]])
+    back_pay = InlineKeyboardMarkup([[Btn("⚙️ Pengaturan", callback_data="admin_pay_settings")]])
     back_plans = InlineKeyboardMarkup([[Btn("📦 Daftar Paket", callback_data="admin_plans")]])
 
     if action == "pay_qris":
