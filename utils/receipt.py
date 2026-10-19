@@ -47,14 +47,25 @@ class ReceiptResult:
 
 # ── Mesin OCR ─────────────────────────────────────────────────────────────────
 
+_ocr_error = ""
+
+
 def ocr_available() -> bool:
+    """True jika library OCR bisa di-import. Penyebab kegagalan disimpan di ocr_error()."""
+    global _ocr_error
     try:
-        import rapidocr_onnxruntime  # noqa: F401
         import cv2  # noqa: F401
         import numpy  # noqa: F401
+        import rapidocr_onnxruntime  # noqa: F401
+        _ocr_error = ""
         return True
-    except Exception:
+    except Exception as e:
+        _ocr_error = f"{type(e).__name__}: {e}"[:180]
         return False
+
+
+def ocr_error() -> str:
+    return _ocr_error
 
 
 def _get_engine():
