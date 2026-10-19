@@ -186,3 +186,32 @@ Session Telethon disimpan di database dan di-load otomatis setiap bot restart.
 ## 📄 Lisensi
 
 Private — tidak untuk didistribusikan ulang tanpa izin.
+
+---
+
+## 🤖 Auto-Verifikasi Bukti Bayar (OCR)
+
+Bot dapat membaca screenshot bukti transfer dan menyetujui order otomatis.
+
+**Aturan baca**
+- **Wajib:** nominal pada gambar = total order (harga + kode unik).
+- **Opsional:** tanggal & jam transaksi. Jika terbaca, harus berada di antara waktu order dibuat dan batas bayar (toleransi 3 menit). Jam di status bar HP diabaikan; jika tanggal/jam tidak terlihat, hanya nominal yang dicek.
+- Zona waktu bukti dianggap WIB (WITA/WIT dikenali bila tertulis). Ubah default lewat `bot_settings` key `pay_tz_offset` (jam, default `7`).
+
+**Hasil**
+| Kondisi | Tindakan bot |
+|---|---|
+| Nominal cocok (+ waktu cocok / tidak terlihat) | VIP aktif otomatis, admin menerima laporan + tombol **Batalkan Langganan** |
+| Nominal tidak terbaca / tidak cocok | User diminta kirim ulang (maks 3x), setelah itu diteruskan ke admin |
+| Nominal cocok tapi waktu di luar rentang | Diteruskan ke admin (tidak di-approve otomatis) |
+| Gambar identik dengan bukti order lain | Diteruskan ke admin dengan peringatan |
+| OCR error / library belum terpasang | Diteruskan ke admin (alur manual biasa) |
+
+**Kontrol admin** (Panel Admin → Pembayaran)
+- **🤖 Auto-Verifikasi ON/OFF** — default OFF. OFF = semua bukti diverifikasi manual seperti sebelumnya.
+- **🧾 Riwayat Auto** — daftar order yang disetujui bot.
+- **🚫 Batalkan Langganan** — pada order Lunas: status order jadi *Dicabut*, masa VIP dikurangi sebesar hari paket order itu (pembelian sah lain tidak terpengaruh); jika sisa habis, VIP dinonaktifkan dan session dihentikan. Tersedia juga opsi **wajib manual** agar pembayaran user tersebut ke depan tidak lagi diverifikasi otomatis.
+
+**Catatan keamanan:** OCR hanya membaca gambar; screenshot hasil editan tetap bisa lolos. Karena itu setiap persetujuan otomatis dilaporkan ke admin, bukti identik dideteksi, dan admin bisa membatalkan kapan saja. Untuk kepastian penuh, cocokkan dengan mutasi rekening.
+
+**Dependensi:** `rapidocr-onnxruntime` (model OCR ikut paket, ±15 MB; RAM sekitar 300–500 MB saat OCR berjalan). Jika muncul error `libGL.so.1`, pasang paket sistem `libgl1`.

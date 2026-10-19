@@ -118,6 +118,12 @@ def init_db():
             handled_by BIGINT
         )
     """)
+    # v3: verifikasi otomatis bukti bayar (OCR) & pembatalan oleh admin
+    c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS proof_hash TEXT")
+    c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS verified_by TEXT")
+    c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS verify_note TEXT")
+    c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS ocr_attempts INTEGER DEFAULT 0")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_orders_proof_hash ON orders(proof_hash)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_orders_user ON orders(user_id)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status)")
     conn.commit()
@@ -533,7 +539,7 @@ def get_plan(plan_id: int) -> dict | None:
 # ── Order pembayaran ───────────────────────────────────────────────────────────
 
 _ORDER_COLS = ("id, user_id, plan_id, plan_name, days, base_price, unique_code, total, status, "
-               "qris_payload, proof_file_id, created_at, updated_at, paid_at, handled_by")
+               "qris_payload, proof_file_id, created_at, updated_at, paid_at, handled_by, verified_by, verify_note")
 _ORDER_KEYS = [k.strip() for k in _ORDER_COLS.split(",")]
 
 
@@ -574,12 +580,33 @@ def get_open_order(user_id: int) -> dict | None:
     return _order(r) if r else None
 
 
-def set_order_proof(order_id: int, file_id: str) -> bool:
+def set_order_proof(order_id: int, file_id: str, proof_hash: str | None = None, status: str = "verifying") -> bool:
+    """Simpan bukti bayar. status='pending' dipakai saat OCR gagal & user diminta kirim ulang."""
     return (_run(
-        "UPDATE orders SET proof_file_id=%s, status='verifying', updated_at=%s "
+        "UPDATE orders SET proof_file_id=%s, proof_hash=%s, status=%s, updated_at=%s "
         "WHERE id=%s AND status IN ('pending','verifying')",
-        (file_id, _now_iso(), order_id), "rowcount",
+        (file_id, proof_hash, status, _now_iso(), order_id), "rowcount",
     ) or 0) > 0
+
+
+def bump_ocr_attempts(order_id: int) -> int:
+    row = _run("UPDATE orders SET ocr_attempts=COALESCE(ocr_attempts,0)+1 WHERE id=%s RETURNING ocr_attempts",
+               (order_id,), "one")
+    return row[0] if row else 0
+
+
+def find_duplicate_proof(proof_hash: str, exclude_order_id: int) -> dict | None:
+    """Order LAIN yang sudah memakai gambar bukti identik (anti bukti dipakai ulang)."""
+    r = _run(
+        f"SELECT {_ORDER_COLS} FROM orders WHERE proof_hash=%s AND id<>%s "
+        "AND status IN ('verifying','paid','rejected','revoked') ORDER BY id DESC LIMIT 1",
+        (proof_hash, exclude_order_id), "one",
+    )
+    return _order(r) if r else None
+
+
+def set_order_note(order_id: int, note: str) -> None:
+    _run("UPDATE orders SET verify_note=%s WHERE id=%s", (note[:500], order_id))
 
 
 def update_order_status(order_id: int, status: str, only_from: tuple = (), handled_by: int | None = None) -> bool:
@@ -591,16 +618,18 @@ def update_order_status(order_id: int, status: str, only_from: tuple = (), handl
     return (_run(sql, tuple(params), "rowcount") or 0) > 0
 
 
-def approve_order(order_id: int, admin_id: int) -> dict | None:
+def approve_order(order_id: int, admin_id: int, verified_by: str = "admin", note: str | None = None) -> dict | None:
     """
     Setujui order secara atomik (anti double-approve) lalu perpanjang VIP.
+    verified_by: 'admin' (manual) atau 'auto' (OCR). admin_id=0 untuk persetujuan bot.
     Return order (dengan key 'new_expired') atau None jika sudah diproses.
     """
     now = _now_iso()
     changed = _run(
-        "UPDATE orders SET status='paid', paid_at=%s, updated_at=%s, handled_by=%s "
+        "UPDATE orders SET status='paid', paid_at=%s, updated_at=%s, handled_by=%s, verified_by=%s, "
+        "verify_note=COALESCE(%s, verify_note) "
         "WHERE id=%s AND status IN ('pending','verifying','expired')",
-        (now, now, admin_id, order_id), "rowcount",
+        (now, now, admin_id, verified_by, note, order_id), "rowcount",
     )
     if not changed:
         return None
@@ -609,26 +638,70 @@ def approve_order(order_id: int, admin_id: int) -> dict | None:
     return order
 
 
-def list_orders(status: str | tuple | None = None, limit: int = 8, offset: int = 0) -> list[dict]:
-    sql = f"SELECT {_ORDER_COLS} FROM orders"
-    params: list = []
-    if status:
-        statuses = (status,) if isinstance(status, str) else tuple(status)
-        sql += " WHERE status IN (" + ",".join(["%s"] * len(statuses)) + ")"
-        params += list(statuses)
-    sql += " ORDER BY id DESC LIMIT %s OFFSET %s"
-    params += [limit, offset]
-    return [_order(r) for r in _run(sql, tuple(params), "all")]
+def revoke_paid_order(order_id: int, admin_id: int) -> dict | None:
+    """
+    Batalkan order yang sudah 'paid' (mis. bukti dipalsukan): status → 'revoked' dan hari yang
+    diberikan order ini DIKURANGI dari masa VIP (hari dari pembelian sah lain tetap utuh).
+    Jika sisa masa VIP jadi <= 0, langganan dinonaktifkan. Return order + 'new_expired' + 'deactivated'.
+    """
+    changed = _run(
+        "UPDATE orders SET status='revoked', updated_at=%s, handled_by=%s WHERE id=%s AND status='paid'",
+        (_now_iso(), admin_id, order_id), "rowcount",
+    )
+    if not changed:
+        return None
+    order = get_order(order_id)
+    uid, now = order["user_id"], datetime.now()
+    row = _run("SELECT expired_at, is_active, plan FROM subscriptions WHERE user_id=%s", (uid,), "one")
+    order["new_expired"], order["deactivated"] = None, False
+    if row and row[1] and row[2] == "vip":
+        try:
+            new_exp = datetime.fromisoformat(row[0]) - timedelta(days=order["days"])
+        except Exception:
+            new_exp = now
+        if new_exp <= now:
+            _run("UPDATE subscriptions SET is_active=0, expired_at=%s WHERE user_id=%s", (now.isoformat(), uid))
+            order["deactivated"] = True
+        else:
+            _run("UPDATE subscriptions SET expired_at=%s, reminder_stage=0 WHERE user_id=%s", (new_exp.isoformat(), uid))
+        order["new_expired"] = new_exp
+    return order
 
 
-def count_orders(status: str | tuple | None = None) -> int:
-    sql = "SELECT COUNT(*) FROM orders"
-    params: list = []
+# ── Daftar user yang WAJIB verifikasi manual (mis. setelah terbukti curang) ────
+
+def get_manual_only_users() -> set[int]:
+    raw = get_setting("pay_manual_users", "") or ""
+    return {int(x) for x in raw.split(",") if x.strip().isdigit()}
+
+
+def add_manual_only_user(user_id: int) -> None:
+    ids = get_manual_only_users() | {int(user_id)}
+    set_setting("pay_manual_users", ",".join(str(i) for i in sorted(ids)))
+
+
+def _order_where(status, verified_by) -> tuple[str, list]:
+    conds, params = [], []
     if status:
         statuses = (status,) if isinstance(status, str) else tuple(status)
-        sql += " WHERE status IN (" + ",".join(["%s"] * len(statuses)) + ")"
+        conds.append("status IN (" + ",".join(["%s"] * len(statuses)) + ")")
         params += list(statuses)
-    return _run(sql, tuple(params), "one")[0]
+    if verified_by:
+        conds.append("verified_by=%s")
+        params.append(verified_by)
+    return (" WHERE " + " AND ".join(conds)) if conds else "", params
+
+
+def list_orders(status: str | tuple | None = None, limit: int = 8, offset: int = 0,
+                verified_by: str | None = None) -> list[dict]:
+    where, params = _order_where(status, verified_by)
+    sql = f"SELECT {_ORDER_COLS} FROM orders{where} ORDER BY id DESC LIMIT %s OFFSET %s"
+    return [_order(r) for r in _run(sql, tuple(params + [limit, offset]), "all")]
+
+
+def count_orders(status: str | tuple | None = None, verified_by: str | None = None) -> int:
+    where, params = _order_where(status, verified_by)
+    return _run(f"SELECT COUNT(*) FROM orders{where}", tuple(params), "one")[0]
 
 
 def get_user_orders(user_id: int, limit: int = 8) -> list[dict]:

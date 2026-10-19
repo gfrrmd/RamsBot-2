@@ -182,4 +182,5 @@ STATUS_LABEL = {
     "rejected": "❌ Ditolak",
     "expired": "⌛ Kedaluwarsa",
     "cancelled": "🚫 Dibatalkan",
+    "revoked": "⛔ Dicabut admin",
 }
