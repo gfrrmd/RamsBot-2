@@ -30,7 +30,7 @@ from keyboards import main_keyboard, order_admin_keyboard
 from services.session_runner import ensure_client_running
 from ui import STATUS_LABEL, edit_or_send, esc, fmt_dt, header, kv, rp, sub_badge, replace_with_photo
 from utils.qris import QRISError, convert_qris, parse_amount, render_qr_png, summarize_qris
-from utils.receipt import ocr_available
+from utils.receipt import ocr_available, ocr_error
 
 PAGE = 8
 OPEN_STATUSES = ("pending", "verifying", "expired")
@@ -223,10 +223,10 @@ def build_pay_admin_text() -> str:
     waiting = count_orders(("pending", "verifying"))
     paket = str(len(active)) + " dari " + str(len(plans))
     auto_on = get_setting("pay_auto", "0") == "1"
-    if auto_on and not ocr_available():
-        auto_txt = "ON ⚠️ (library OCR belum terpasang → otomatis jatuh ke manual)"
-    else:
-        auto_txt = "ON ✅" if auto_on else "OFF ❌"
+    ocr_ok = ocr_available()
+    auto_txt = "ON ✅" if auto_on else "OFF ❌"
+    if not ocr_ok:
+        auto_txt += " — ⚠️ OCR tidak tersedia, semua bukti diverifikasi manual"
     return (
         f"{header('💳', 'Pengaturan Pembayaran')}\n"
         f"{kv('QRIS bayar', qris_line, 11)}\n"
@@ -236,7 +236,8 @@ def build_pay_admin_text() -> str:
         f"{kv('Auto-verifikasi', auto_txt, 11)}\n"
         f"{kv('Menunggu', str(waiting) + ' order', 11)}\n"
         "\n"
-        f"Status toko: {'🟢 Siap menerima pesanan' if ready else '🔴 Belum siap (atur QRIS & minimal 1 paket aktif)'}\n\n"
+        + (f"⚠️ <b>OCR tidak dapat dimuat:</b> <code>{esc(ocr_error())}</code>\n\n" if not ocr_ok else "")
+        + f"Status toko: {'🟢 Siap menerima pesanan' if ready else '🔴 Belum siap (atur QRIS & minimal 1 paket aktif)'}\n\n"
         "ℹ️ Pembeli membayar ke QRIS dinamis (nominal otomatis).\n"
         + ("Auto-verifikasi <b>ON</b>: bot membaca nominal (dan tanggal/jam bila terlihat) pada screenshot; "
            "jika cocok, VIP aktif otomatis dan kamu menerima laporan + tombol pembatalan. "
@@ -398,8 +399,7 @@ async def handle_callback(query, context, data: str) -> bool:
         if get_setting("pay_auto", "0") == "1":
             set_setting("pay_auto", "0")
         elif not ocr_available():
-            await query.answer("Library OCR belum terpasang (pip install -r requirements.txt). "
-                               "Auto-verifikasi tidak bisa diaktifkan.", show_alert=True)
+            pass            # alasan ditampilkan di panel (query sudah di-answer oleh handler induk)
         else:
             set_setting("pay_auto", "1")
         await show_pay_admin(query)
