@@ -6,6 +6,22 @@ from database import get_auto_dl_view_once, has_used_trial
 HOME = Btn("🏠 Menu Utama", callback_data="menu_back")
 
 
+def nav_row(prefix: str, page: int, total: int, per_page: int) -> list:
+    """Baris navigasi ⬅️ Back / Next ➡️ untuk daftar berhalaman. Kosong jika hanya 1 halaman.
+    callback_data = f"{prefix}{nomor_halaman}"."""
+    row = []
+    if page > 0:
+        row.append(Btn("⬅️ Back", callback_data=f"{prefix}{page - 1}"))
+    if (page + 1) * per_page < total:
+        row.append(Btn("Next ➡️", callback_data=f"{prefix}{page + 1}"))
+    return row
+
+
+def page_info(page: int, total: int, per_page: int) -> str:
+    pages = max(1, -(-total // per_page))
+    return f"Halaman {page + 1}/{pages}"
+
+
 # ── User ──────────────────────────────────────────────────────────────────────
 
 def main_keyboard(uid):
@@ -13,6 +29,7 @@ def main_keyboard(uid):
         [Btn("✨ Setup Bot", callback_data="menu_setup")],
         [Btn("🎯 Fitur VIP", callback_data="menu_fitur"), Btn("👤 Status Akun", callback_data="menu_subscription")],
         [Btn("📖 Panduan", callback_data="menu_beli"), Btn("💎 Beli VIP", callback_data="pay_menu")],
+        [Btn("🔑 Token VIP", callback_data="tok_menu"), Btn("🎟️ Klaim Voucher", callback_data="vch_enter")],
     ]
     if uid == ADMIN_ID:
         rows.append([Btn("🛠️ Panel Admin", callback_data="menu_admin")])
@@ -98,11 +115,19 @@ def admin_keyboard(pending: int = 0):
     pay_label = f"💳 Pembayaran{f' ({pending})' if pending else ''}"
     return InlineKeyboardMarkup([
         [Btn("📊 Statistik", callback_data="admin_stats"), Btn(pay_label, callback_data="admin_pay")],
+        [Btn("👥 Kelola User", callback_data="admin_users"), Btn("📢 Pengumuman", callback_data="admin_announce")],
+        [Btn("🏷️ Kode Promo", callback_data="admin_promos"), Btn("🎟️ Voucher", callback_data="admin_vchs")],
+        [Btn("🔒 Blacklist", callback_data="admin_blacklist"), Btn("🗄️ Data", callback_data="admin_data")],
+        [HOME],
+    ])
+
+
+def users_keyboard():
+    """Kategori Kelola User: daftar, cek, gift, dan cabut VIP."""
+    return InlineKeyboardMarkup([
         [Btn("👑 List VIP", callback_data="admin_viplist_0"), Btn("🔎 Cek User", callback_data="admin_finduser")],
         [Btn("🎁 Gift VIP", callback_data="admin_gift"), Btn("🚫 Revoke VIP", callback_data="admin_revoke")],
-        [Btn("📢 Pengumuman", callback_data="admin_announce"), Btn("🔒 Blacklist", callback_data="admin_blacklist")],
-        [Btn("🗄️ Data", callback_data="admin_data")],
-        [HOME],
+        [Btn("🔙 Panel Admin", callback_data="menu_admin")],
     ])
 
 
