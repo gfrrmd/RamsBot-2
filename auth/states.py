@@ -9,6 +9,10 @@ waiting_revoke: set[int] = set()
 # User: sedang diminta mengirim gambar QRIS statis / bukti bayar.
 waiting_qris_upload: set[int] = set()
 waiting_payment_proof: dict[int, int] = {}      # user_id -> order_id
+# User: sedang diminta mengetik kode. Nilai: "token" | "voucher" | "promo".
+waiting_code: dict[int, str] = {}
+# Kode promo yang sedang dipasang user untuk pesanan berikutnya (user_id -> kode).
+applied_promo: dict[int, str] = {}
 # Admin: 1 state aktif sekaligus. {"action": str, ...konteks}
 admin_state: dict[int, dict] = {}
 
@@ -17,6 +21,7 @@ def clear_input_waits(uid: int):
     """Bersihkan state input user (upload QRIS / bukti bayar)."""
     waiting_qris_upload.discard(uid)
     waiting_payment_proof.pop(uid, None)
+    waiting_code.pop(uid, None)
 
 
 def clear_user_state(uid: int):
