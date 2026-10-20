@@ -15,12 +15,15 @@ from database import (
     extend_subscription,
     get_all_user_ids,
     get_stats,
+    get_token_log,
     get_user_profile,
+    issue_token,
     get_vip_page,
     resolve_user_id,
     set_setting,
     upsert_user,
 )
+from keyboards import nav_row, page_info, users_keyboard
 from services.session_runner import ensure_client_running
 from ui import edit_or_send, esc, fmt_date, fmt_dt, fmt_remaining, header, kv, rp, sub_badge, get_sub_state
 
@@ -81,6 +84,12 @@ def build_user_card(user_id: int):
     uname = f"@{esc(p['username'])}" if p["username"] else "—"
     name_link = '<a href="tg://user?id=' + str(user_id) + '">' + esc(p["full_name"]) + "</a>"
     id_code = "<code>" + str(user_id) + "</code>"
+    tok = p.get("token")
+    token_line = f"<code>{tok['token']}</code> ({tok['uses']}/{tok['max_uses']})" if tok else "—"
+    log = get_token_log(user_id, 3)
+    log_lines = "".join(
+        f"\nPindah token: <code>{e['from_id']}</code> → <code>{e['to_id']}</code> ({esc(fmt_date(e['created_at']))})"
+        for e in log)
     text = (
         f"{header('👤', 'Info User')}\n"
         f"{kv('Nama', name_link, 10)}\n"
@@ -91,13 +100,15 @@ def build_user_card(user_id: int):
         f"{kv('Session', sess, 10)}\n"
         f"{kv('QRIS', 'Tersimpan ✅' if p['has_qris'] else '—', 10)}\n"
         f"{kv('Trial', 'Sudah dipakai' if p['trial_used'] else 'Belum', 10)}\n"
+        f"{kv('Token', token_line, 10)}\n"
         f"{kv('Order lunas', str(p['paid_orders']) + ' - ' + rp(p['paid_total']), 10)}\n"
         f"{kv('Daftar', esc(fmt_date(p['created_at'])), 10)}"
+        f"{log_lines}"
     )
     kb = InlineKeyboardMarkup([
         [Btn("➕ 7 hari", callback_data=f"admin_u_add_{user_id}_7"), Btn("➕ 30 hari", callback_data=f"admin_u_add_{user_id}_30")],
-        [Btn("🚫 Revoke VIP", callback_data=f"admin_u_rev_{user_id}")],
-        [Btn("🔙 Panel Admin", callback_data="menu_admin")],
+        [Btn("🚫 Revoke VIP", callback_data=f"admin_u_rev_{user_id}"), Btn("🔑 Reset Token", callback_data=f"admin_u_tok_{user_id}")],
+        [Btn("👑 List VIP", callback_data="admin_viplist_0"), Btn("🔙 Kelola User", callback_data="admin_users")],
     ])
     return text, kb
 
@@ -147,6 +158,18 @@ async def handle_callback(query, context, data: str) -> bool:
         await edit_or_send(query, build_stats_text(), back)
         return True
 
+    if data == "admin_users":
+        await edit_or_send(
+            query,
+            f"{header('👥', 'Kelola User')}\n"
+            f"VIP aktif: {count_vip_active()}\n\n"
+            "👑 <b>List VIP</b> - daftar VIP aktif\n"
+            "🔎 <b>Cek User</b> - lihat detail user\n"
+            "🎁 <b>Gift VIP</b> - beri VIP gratis\n"
+            "🚫 <b>Revoke VIP</b> - cabut VIP user",
+            users_keyboard())
+        return True
+
     m = re.fullmatch(r"admin_viplist_(\d+)", data)
     if m:
         page = int(m.group(1))
@@ -163,14 +186,11 @@ async def handle_callback(query, context, data: str) -> bool:
             lines.append(f"<b>{i}.</b> {esc(name)}{uname}\n   <code>{u['user_id']}</code> - s/d {esc(fmt_date(u['expired_at']))} ({fmt_remaining(left) if left else '—'})")
             btns.append(Btn(f"{i}. {name[:18]}", callback_data=f"admin_u_{u['user_id']}"))
         kb = [btns[i:i + 2] for i in range(0, len(btns), 2)]
-        nav = []
-        if page > 0:
-            nav.append(Btn("⬅️", callback_data=f"admin_viplist_{page - 1}"))
-        if (page + 1) * PAGE < total:
-            nav.append(Btn("➡️", callback_data=f"admin_viplist_{page + 1}"))
+        nav = nav_row("admin_viplist_", page, total, PAGE)
         if nav:
             kb.append(nav)
-        kb.append([Btn("🔙 Panel Admin", callback_data="menu_admin")])
+            lines.append(f"\n{page_info(page, total, PAGE)}")
+        kb.append([Btn("🔙 Kelola User", callback_data="admin_users")])
         lines.append("\n💡 Tap nama untuk kelola user.")
         await edit_or_send(query, "\n".join(lines), InlineKeyboardMarkup(kb))
         return True
@@ -178,7 +198,7 @@ async def handle_callback(query, context, data: str) -> bool:
     if data == "admin_finduser":
         admin_state[uid] = {"action": "finduser"}
         await edit_or_send(query, f"{header('🔎', 'Cek User')}\nKirim <b>user ID</b> atau <b>@username</b>.\n\nKetik /cancel untuk batal.",
-                           InlineKeyboardMarkup([[Btn("❌ Batal", callback_data="menu_admin")]]))
+                           InlineKeyboardMarkup([[Btn("❌ Batal", callback_data="admin_users")]]))
         return True
 
     m = re.fullmatch(r"admin_u_(\d+)", data)
@@ -201,6 +221,19 @@ async def handle_callback(query, context, data: str) -> bool:
         except Exception:
             pass
         await query.answer(f"+{days} hari. Session: {sess.split(':')[0]}", show_alert=True)
+        text, kb = build_user_card(target)
+        await edit_or_send(query, text, kb)
+        return True
+
+    m = re.fullmatch(r"admin_u_tok_(\d+)", data)
+    if m:
+        target = int(m.group(1))
+        s = get_sub_state(target)
+        if s["state"] != "active" or s["plan"] != "vip":
+            await query.answer("User tidak punya VIP aktif, token tidak bisa dibuat.", show_alert=True)
+            return True
+        tok = issue_token(target)
+        await query.answer(f"Token baru: {tok['token']} (pemakaian 0/{tok['max_uses']}). Kode lama hangus.", show_alert=True)
         text, kb = build_user_card(target)
         await edit_or_send(query, text, kb)
         return True
