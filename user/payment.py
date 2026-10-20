@@ -7,27 +7,34 @@ Semua pengaturan (QRIS tujuan, paket, harga) diatur admin dari Panel Admin.
 """
 import asyncio
 import random
+import re
 from datetime import datetime, timedelta
 
 from telegram import InlineKeyboardButton as Btn, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
-from admin.payments import notify_admin_new_proof
-from auth.states import clear_input_waits, waiting_payment_proof
-from config import ADMIN_CONTACT
+from admin.payments import approve_and_notify, notify_admin_auto_approved, notify_admin_new_proof
+from auth.states import applied_promo, clear_input_waits, waiting_code, waiting_payment_proof
+from config import ADMIN_CONTACT, ADMIN_ID
 from database import (
     active_order_totals,
+    bump_ocr_attempts,
+    check_promo,
     create_order,
+    find_duplicate_proof,
     get_open_order,
     get_order,
     get_plan,
+    get_manual_only_users,
     get_plans,
     get_setting,
     get_user_orders,
+    set_order_note,
     set_order_proof,
     update_order_status,
 )
+from keyboards import nav_row, page_info
 from ui import (
     STATUS_LABEL,
     edit_or_send,
@@ -40,9 +47,14 @@ from ui import (
     rp,
     sub_badge,
 )
+from utils.codes import CodeError, blocked_message, calc_discount, limiter
 from utils.qris import QRISError, convert_qris, render_qr_png, summarize_qris
+from utils.receipt import ocr_available, sha256_hex, verify_receipt
 
 MAX_PROOF_BYTES = 10 * 1024 * 1024
+PLAN_PAGE = 5                 # paket per halaman di menu beli
+HIST_PAGE = 5                 # pesanan per halaman di riwayat
+MAX_OCR_ATTEMPTS = 3          # percobaan baca otomatis sebelum diteruskan ke admin
 
 
 # ── Util ──────────────────────────────────────────────────────────────────────
@@ -82,6 +94,8 @@ def _order_caption(order: dict) -> str:
         kv("Paket", f"{esc(order['plan_name'])} ({order['days']} hari)"),
         kv("Harga", rp(order["base_price"])),
     ]
+    if order.get("discount"):
+        lines.append(kv("Diskon", f"-{rp(order['discount'])} ({esc(order.get('promo_code'))})"))
     if order["unique_code"]:
         lines.append(kv("Kode unik", f"+{rp(order['unique_code'])}"))
     lines.append(kv("Total", f"<b>{rp(order['total'])}</b>"))
@@ -99,46 +113,86 @@ def _order_caption(order: dict) -> str:
 
 def _order_keyboard(order: dict) -> InlineKeyboardMarkup:
     oid = order["id"]
+    home = Btn("🏠 Menu Utama", callback_data="menu_back")
     if order["status"] == "pending":
         rows = [[Btn("📸 Kirim Bukti Bayar", callback_data=f"pay_proof_{oid}")],
-                [Btn("❌ Batalkan Pesanan", callback_data=f"pay_cancel_{oid}")]]
+                [Btn("❌ Batalkan Pesanan", callback_data=f"pay_cancel_{oid}"), home]]
     elif order["status"] == "verifying":
-        rows = [[Btn("🔁 Kirim Ulang Bukti", callback_data=f"pay_proof_{oid}")]]
+        rows = [[Btn("🔁 Kirim Ulang Bukti", callback_data=f"pay_proof_{oid}")],
+                [Btn("📜 Riwayat", callback_data="pay_history"), home]]
     else:
-        rows = [[Btn("💎 Beli Lagi", callback_data="pay_menu")]]
-    rows.append([Btn("🏠 Menu Utama", callback_data="menu_back")])
+        rows = [[Btn("💎 Beli Lagi", callback_data="pay_menu"), Btn("📜 Riwayat", callback_data="pay_history")],
+                [home]]
     return InlineKeyboardMarkup(rows)
 
 
 # ── Layar ─────────────────────────────────────────────────────────────────────
 
-async def show_pay_menu(query, uid: int):
+def _current_promo(uid: int) -> tuple[dict | None, str | None]:
+    """Promo yang terpasang untuk user (divalidasi ulang). Yang sudah tidak valid dilepas + catatan."""
+    code = applied_promo.get(uid)
+    if not code:
+        return None, None
+    try:
+        return check_promo(code, uid), None
+    except CodeError as e:
+        applied_promo.pop(uid, None)
+        return None, f"⚠️ Kode promo {esc(code)} dilepas: {esc(e.args[0])}"
+
+
+def _price_text(price: int) -> str:
+    return rp(price) if price > 0 else "GRATIS"
+
+
+def build_pay_menu(uid: int, page: int = 0) -> tuple[str, InlineKeyboardMarkup]:
     if not payment_ready():
-        await edit_or_send(
-            query,
-            f"{header('💎', 'Beli / Perpanjang VIP')}\nPembayaran lewat bot belum tersedia saat ini.\n"
+        return (
+            f"{header('💎', 'Beli / Perpanjang VIP')}Pembayaran lewat bot belum tersedia saat ini.\n"
             f"Silakan hubungi admin {esc(ADMIN_CONTACT)}.",
             InlineKeyboardMarkup([[Btn("🔙 Kembali", callback_data="menu_back")]]),
         )
-        return
 
     plans = get_plans(active_only=True)
-    lines = [header("💎", "Beli / Perpanjang VIP"), kv("Akun kamu", sub_badge(uid), 10), ""]
+    total = len(plans)
+    page = max(0, min(page, max(0, (total - 1) // PLAN_PAGE)))
+    promo, note = _current_promo(uid)
+    lines = [header("💎", "Beli / Perpanjang VIP").rstrip(), kv("Akun kamu", sub_badge(uid))]
+    if promo:
+        lines.append(f"🏷️ Promo: <b>{esc(promo['code'])}</b> (diskon {promo['percent']}%)")
+    if note:
+        lines.append(note)
     rows = []
     open_o = get_open_order(uid)
     if open_o:
         rows.append([Btn(f"🧾 Lanjutkan Pesanan #{open_o['id']} - {rp(open_o['total'])}", callback_data=f"pay_view_{open_o['id']}")])
     lines.append("📦 <b>Pilih paket:</b>")
-    for p in plans:
-        lines.append(f"• <b>{esc(p['name'])}</b> — {p['days']} hari — {rp(p['price'])}")
-        rows.append([Btn(f"💎 {p['name']} - {rp(p['price'])}", callback_data=f"pay_plan_{p['id']}")])
+    for p in plans[page * PLAN_PAGE:(page + 1) * PLAN_PAGE]:
+        if promo:
+            final = calc_discount(p["price"], promo["percent"])[1]
+            lines.append(f"• <b>{esc(p['name'])}</b> — {p['days']} hari — <s>{rp(p['price'])}</s> {_price_text(final)}")
+        else:
+            final = p["price"]
+            lines.append(f"• <b>{esc(p['name'])}</b> — {p['days']} hari — {rp(final)}")
+        rows.append([Btn(f"💎 {p['name']} - {_price_text(final)}", callback_data=f"pay_plan_{p['id']}")])
+    nav = nav_row("pay_menu_", page, total, PLAN_PAGE)
+    if nav:
+        rows.append(nav)
+        lines.append(page_info(page, total, PLAN_PAGE))
+    if promo:
+        rows.append([Btn("🏷️ Ganti Promo", callback_data="pay_promo"), Btn("🗑️ Hapus Promo", callback_data="pay_promoclear")])
+    else:
+        rows.append([Btn("🏷️ Punya Kode Promo?", callback_data="pay_promo")])
     lines += [
-        "",
         "ℹ️ Perpanjang sebelum habis → sisa hari <b>otomatis ditambahkan</b>.",
         "💳 Bayar pakai QRIS (semua e-wallet &amp; m-banking), lalu kirim bukti bayar. Admin akan memverifikasi.",
     ]
     rows.append([Btn("📜 Riwayat Pesanan", callback_data="pay_history"), Btn("🏠 Menu Utama", callback_data="menu_back")])
-    await edit_or_send(query, "\n".join(lines), InlineKeyboardMarkup(rows))
+    return "\n".join(lines), InlineKeyboardMarkup(rows)
+
+
+async def show_pay_menu(query, uid: int, page: int = 0):
+    text, kb = build_pay_menu(uid, page)
+    await edit_or_send(query, text, kb)
 
 
 async def show_order(query, order: dict):
@@ -150,6 +204,28 @@ async def show_order(query, order: dict):
         await edit_or_send(query, _order_caption(order) + "\n\n⚠️ Gambar QR gagal dibuat, hubungi admin.", _order_keyboard(order))
         return
     await replace_with_photo(query, png, _order_caption(order), _order_keyboard(order))
+
+
+async def _finish_free_order(query, uid: int, oid: int, promo: dict):
+    """Promo 100%: tidak perlu bayar, pesanan langsung disetujui."""
+    await edit_or_send(
+        query,
+        f"{header('🎉', 'Promo 100% Dipakai')}Kode <b>{esc(promo['code'])}</b> membuat pesanan #{oid} gratis. "
+        "VIP kamu sedang diaktifkan.",
+        InlineKeyboardMarkup([[Btn("🏠 Menu Utama", callback_data="menu_back")]]),
+    )
+    bot = query.get_bot()
+    ok, info = await approve_and_notify(bot, oid, 0, "promo", f"Kode promo {promo['code']} (100%)")
+    if not ok:
+        print(f"[payment] order gratis #{oid} gagal disetujui: {info}")
+        return
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            f"🏷️ <b>VIP gratis via promo 100%</b>\nUser: <code>{uid}</code>\nKode: {esc(promo['code'])}\n{esc(info)}",
+            parse_mode=ParseMode.HTML)
+    except Exception:
+        pass
 
 
 async def _create_order_flow(query, uid: int, plan_id: int):
@@ -168,14 +244,39 @@ async def _create_order_flow(query, uid: int, plan_id: int):
             return
         update_order_status(open_o["id"], "cancelled", ("pending",))     # ganti pesanan lama
 
-    code = pick_unique_code(plan["price"])
-    total = plan["price"] + code
+    promo, discount, price = None, 0, plan["price"]
+    code = applied_promo.get(uid)
+    if code:
+        try:
+            promo = check_promo(code, uid)
+        except CodeError as e:
+            applied_promo.pop(uid, None)
+            await query.answer(f"Kode promo dilepas: {e.args[0]}", show_alert=True)
+            await show_pay_menu(query, uid)
+            return
+        discount, price = calc_discount(plan["price"], promo["percent"])
+
+    free = price <= 0
+    unique = 0 if free else pick_unique_code(price)
+    total = price + unique
+    payload = ""
+    if not free:
+        try:
+            payload = convert_qris(static, total)
+        except QRISError as e:
+            await query.answer(f"QRIS pembayaran bermasalah: {e}", show_alert=True)
+            return
     try:
-        payload = convert_qris(static, total)
-    except QRISError as e:
-        await query.answer(f"QRIS pembayaran bermasalah: {e}", show_alert=True)
+        oid = create_order(uid, plan, unique, total, payload, promo, discount)
+    except CodeError as e:                    # kuota promo direbut user lain saat checkout
+        applied_promo.pop(uid, None)
+        await query.answer(f"Kode promo ditolak: {e.args[0]}", show_alert=True)
+        await show_pay_menu(query, uid)
         return
-    oid = create_order(uid, plan, code, total, payload)
+    applied_promo.pop(uid, None)              # promo sudah terpakai pada pesanan ini
+    if free:
+        await _finish_free_order(query, uid, oid, promo)
+        return
     await show_order(query, get_order(oid))
 
 
@@ -197,25 +298,52 @@ async def payment_callback_handler(update: Update, context: ContextTypes.DEFAULT
 
     clear_input_waits(uid)
 
-    if data == "pay_menu":
+    if data == "pay_promo":
+        wait = limiter.blocked_for(uid)
+        if wait:
+            await edit_or_send(query, blocked_message(wait), InlineKeyboardMarkup([[Btn("🔙 Kembali", callback_data="pay_menu")]]))
+            return
+        waiting_code[uid] = "promo"
+        await edit_or_send(
+            query,
+            f"{header('🏷️', 'Kode Promo')}Kirim kode promo kamu sekarang.\nKetik /cancel untuk batal.",
+            InlineKeyboardMarkup([[Btn("❌ Batal", callback_data="pay_menu")]]),
+        )
+        return
+
+    if data == "pay_promoclear":
+        applied_promo.pop(uid, None)
         await show_pay_menu(query, uid)
+        return
+
+    m = re.fullmatch(r"pay_menu(?:_(\d+))?", data)
+    if m:
+        await show_pay_menu(query, uid, int(m.group(1) or 0))
         return
 
     if data.startswith("pay_plan_"):
         await _create_order_flow(query, uid, int(data[len("pay_plan_"):]))
         return
 
-    if data == "pay_history":
-        orders = get_user_orders(uid, 8)
+    m = re.fullmatch(r"pay_history(?:_(\d+))?", data)
+    if m:
+        all_orders = get_user_orders(uid, 200)
+        total = len(all_orders)
+        page = max(0, min(int(m.group(1) or 0), max(0, (total - 1) // HIST_PAGE)))
+        orders = all_orders[page * HIST_PAGE:(page + 1) * HIST_PAGE]
         if not orders:
             body = "Belum ada pesanan."
         else:
             body = "\n".join(
                 f"<b>#{o['id']}</b> - {esc(o['plan_name'])} - {rp(o['total'])}\n   {STATUS_LABEL.get(o['status'], o['status'])} - {esc(fmt_date(o['created_at']))}"
                 for o in orders)
-        await edit_or_send(query, f"{header('📜', 'Riwayat Pesanan')}\n{body}",
-                           InlineKeyboardMarkup([[Btn("💎 Beli / Perpanjang", callback_data="pay_menu")],
-                                                 [Btn("🏠 Menu Utama", callback_data="menu_back")]]))
+        rows = []
+        nav = nav_row("pay_history_", page, total, HIST_PAGE)
+        if nav:
+            rows.append(nav)
+            body += f"\n\n{page_info(page, total, HIST_PAGE)}"
+        rows.append([Btn("💎 Beli / Perpanjang", callback_data="pay_menu"), Btn("🏠 Menu Utama", callback_data="menu_back")])
+        await edit_or_send(query, f"{header('📜', 'Riwayat Pesanan')}\n{body}", InlineKeyboardMarkup(rows))
         return
 
     # Aksi pada order tertentu
@@ -263,6 +391,35 @@ async def payment_callback_handler(update: Update, context: ContextTypes.DEFAULT
 
 # ── Terima bukti bayar ────────────────────────────────────────────────────────
 
+def _auto_verify_active(uid: int) -> bool:
+    """Auto-verifikasi berjalan jika: diaktifkan admin, OCR terpasang, dan user tidak ditandai wajib-manual."""
+    return get_setting("pay_auto", "0") == "1" and ocr_available() and uid not in get_manual_only_users()
+
+
+def _tz_offset() -> int:
+    try:
+        return max(-12, min(14, int(get_setting("pay_tz_offset", "7"))))
+    except ValueError:
+        return 7
+
+
+async def _forward_to_admin(context, msg, user, oid: int, file_ref: str, digest: str | None, note: str | None):
+    """Jalur manual: simpan bukti, status 'verifying', minta admin memutuskan."""
+    if not set_order_proof(oid, file_ref, digest, "verifying"):
+        await msg.reply_text("⚠️ Pesanan sudah diproses.")
+        return
+    waiting_payment_proof.pop(user.id, None)
+    if note:
+        set_order_note(oid, note)
+    await msg.reply_text(
+        f"✅ <b>Bukti pembayaran diterima</b> (pesanan #{oid}).\n\nAdmin akan segera memverifikasi. "
+        "Kamu akan mendapat notifikasi otomatis begitu VIP aktif. 🙏",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup([[Btn("🏠 Menu Utama", callback_data="menu_back")]]),
+    )
+    await notify_admin_new_proof(context.bot, get_order(oid), user, note)
+
+
 async def handle_proof_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     user = update.effective_user
@@ -284,17 +441,66 @@ async def handle_proof_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if (obj.file_size or 0) > MAX_PROOF_BYTES:
         await msg.reply_text("❌ Ukuran gambar terlalu besar (maks 10 MB).")
         return
+    file_ref = f"{kind}:{obj.file_id}"
 
-    if not set_order_proof(oid, f"{kind}:{obj.file_id}"):
-        waiting_payment_proof.pop(uid, None)
-        await msg.reply_text("⚠️ Pesanan sudah diproses.")
+    # Unduh gambar: dipakai untuk hash (anti bukti dipakai ulang) dan OCR.
+    data, digest = None, None
+    try:
+        tg_file = await obj.get_file()
+        data = bytes(await tg_file.download_as_bytearray())
+        digest = sha256_hex(data)
+    except Exception as e:
+        print(f"[payment] gagal unduh bukti order #{oid}: {e}")
+
+    notes: list[str] = []
+    dup = find_duplicate_proof(digest, oid) if digest else None
+    if dup:
+        notes.append(f"Gambar bukti IDENTIK dengan order #{dup['id']} (user {dup['user_id']}, status {dup['status']}) "
+                     "— kemungkinan bukti dipakai ulang.")
+
+    auto = _auto_verify_active(uid)
+    if not auto or data is None or dup:
+        if auto and data is None:
+            notes.append("Gambar gagal diunduh untuk OCR.")
+        await _forward_to_admin(context, msg, user, oid, file_ref, digest, " ".join(notes) or None)
         return
-    waiting_payment_proof.pop(uid, None)
 
-    await msg.reply_text(
-        f"✅ <b>Bukti pembayaran diterima</b> (pesanan #{oid}).\n\nAdmin akan segera memverifikasi. "
-        "Kamu akan mendapat notifikasi otomatis begitu VIP aktif. 🙏",
-        parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup([[Btn("🏠 Menu Utama", callback_data="menu_back")]]),
-    )
-    await notify_admin_new_proof(context.bot, get_order(oid), user)
+    # ── Auto-verifikasi (OCR) ──
+    wait_msg = await msg.reply_text("🔎 Membaca bukti pembayaran...")
+    created = datetime.fromisoformat(order["created_at"])
+    res = await verify_receipt(data, order["total"], created, _deadline(order), _tz_offset())
+    try:
+        await wait_msg.delete()
+    except Exception:
+        pass
+
+    if res.status == "match":
+        if not set_order_proof(oid, file_ref, digest, "verifying"):
+            waiting_payment_proof.pop(uid, None)
+            await msg.reply_text("⚠️ Pesanan sudah diproses.")
+            return
+        waiting_payment_proof.pop(uid, None)
+        ok, info = await approve_and_notify(context.bot, oid, 0, "auto", res.note)
+        if ok:
+            await notify_admin_auto_approved(context.bot, get_order(oid), res.note)
+        else:
+            await msg.reply_text("⚠️ Pesanan sudah diproses.")
+        return
+
+    if res.status in ("amount_mismatch", "unreadable"):
+        attempts = bump_ocr_attempts(oid)
+        if attempts < MAX_OCR_ATTEMPTS and order["status"] == "pending":
+            set_order_proof(oid, file_ref, digest, "pending")        # tetap menunggu; user boleh kirim ulang
+            left = MAX_OCR_ATTEMPTS - attempts
+            await msg.reply_text(
+                f"⚠️ <b>Nominal pada bukti belum terbaca / tidak cocok.</b>\n\n"
+                f"Pastikan screenshot menampilkan nominal <b>{rp(order['total'])}</b> dengan jelas "
+                "(seluruh layar, tidak terpotong atau buram), lalu kirim ulang.\n"
+                f"Sisa percobaan otomatis: {left}. Ketik /cancel untuk batal.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        notes.append(f"{res.note} (OCR gagal setelah {attempts} percobaan)")
+    else:                                                            # time_mismatch | error
+        notes.append(res.note)
+    await _forward_to_admin(context, msg, user, oid, file_ref, digest, " ".join(notes))
