@@ -30,6 +30,8 @@ LOG_CHANNEL_ID = int(os.environ.get("LOG_CHANNEL_ID", "0"))
 BACKUP_CHANNEL_ID = int(os.environ.get("BACKUP_CHANNEL_ID", "0"))
 # Kontak admin yang ditampilkan ke user.
 ADMIN_CONTACT = os.environ.get("ADMIN_CONTACT", "@kqrbit")
+# URL Mini App di Vercel (opsional), contoh https://ramsbot.vercel.app. Kosong = tombol Mini App disembunyikan.
+WEBAPP_URL = os.environ.get("WEBAPP_URL", "").strip().rstrip("/")
 BOT_NAME = os.environ.get("BOT_NAME", "RamsBot")
 
 DEVICE_MODEL = "RamsBot VIP"
