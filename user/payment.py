@@ -389,6 +389,32 @@ async def payment_callback_handler(update: Update, context: ContextTypes.DEFAULT
         return
 
 
+async def begin_proof(message, uid: int, order: dict | None) -> bool:
+    """
+    Mulai mode kirim bukti bayar untuk sebuah pesanan. Dipakai deep link /start pay_<id> dari Mini App,
+    sehingga bukti diproses alur yang SAMA dengan bot (OCR auto-verifikasi, cek bukti ganda, wajib-manual).
+    Return True jika mode kirim bukti aktif.
+    """
+    if not order or order["user_id"] != uid:
+        await message.reply_text("⚠️ Pesanan tidak ditemukan. Buka menu Beli VIP untuk membuat pesanan baru.")
+        return False
+    if order["status"] == "pending" and datetime.now() > _deadline(order):
+        update_order_status(order["id"], "expired", ("pending",))
+        await message.reply_text("⚠️ Pesanan sudah kedaluwarsa. Silakan buat pesanan baru.")
+        return False
+    if order["status"] not in ("pending", "verifying"):
+        await message.reply_text(f"ℹ️ Pesanan #{order['id']} berstatus {STATUS_LABEL.get(order['status'], order['status'])}.")
+        return False
+    waiting_payment_proof[uid] = order["id"]
+    await message.reply_text(
+        f"📸 <b>Kirim bukti pembayaran</b> (pesanan #{order['id']})\n\nKirim screenshot / foto bukti transfer sekarang "
+        f"(total <b>{rp(order['total'])}</b>).\nKetik /cancel untuk batal.",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup([[Btn("❌ Batal", callback_data="pay_cancelproof")]]),
+    )
+    return True
+
+
 # ── Terima bukti bayar ────────────────────────────────────────────────────────
 
 def _auto_verify_active(uid: int) -> bool:
