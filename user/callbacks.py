@@ -119,7 +119,8 @@ async def user_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
             f"{header('📖', 'Panduan Penggunaan')}\n"
             "<b>1.</b> 💎 Beli VIP lewat tombol <b>Beli / Perpanjang VIP</b> (bayar QRIS, kirim bukti).\n"
             "<b>2.</b> ✨ Tekan <b>Setup Bot</b> lalu login akun Telegram kamu (nomor HP → OTP → 2FA bila ada).\n"
-            "<b>3.</b> 🎯 Pakai fitur lewat command di chat Telegram mana pun.\n\n"
+            "<b>3.</b> 🎯 Pakai fitur lewat command di chat Telegram mana pun.\n"
+            "<b>4.</b> 🔑 Akun terkena banned? Pindahkan VIP ke akun baru lewat <b>Token VIP</b> (maks 3 kali).\n\n"
             f"Pertanyaan lain? Hubungi admin {esc(ADMIN_CONTACT)}",
             beli_keyboard(),
         )
