@@ -23,7 +23,7 @@ from database import (
     set_setting,
     upsert_user,
 )
-from keyboards import nav_row, page_info, users_keyboard
+from keyboards import nav_row, page_info, promotions_keyboard, users_keyboard
 from services.session_runner import ensure_client_running
 from ui import edit_or_send, esc, fmt_date, fmt_dt, fmt_remaining, header, kv, rp, sub_badge, get_sub_state
 
@@ -161,13 +161,23 @@ async def handle_callback(query, context, data: str) -> bool:
     if data == "admin_users":
         await edit_or_send(
             query,
-            f"{header('👥', 'Kelola User')}\n"
+            f"{header('👥', 'Pengguna')}\n"
             f"VIP aktif: {count_vip_active()}\n\n"
             "👑 <b>List VIP</b> - daftar VIP aktif\n"
             "🔎 <b>Cek User</b> - lihat detail user\n"
             "🎁 <b>Gift VIP</b> - beri VIP gratis\n"
-            "🚫 <b>Revoke VIP</b> - cabut VIP user",
+            "🚫 <b>Revoke VIP</b> - cabut VIP user\n"
+            "📢 <b>Pengumuman</b> - kirim pesan ke semua user",
             users_keyboard())
+        return True
+
+    if data == "admin_promotions":
+        await edit_or_send(
+            query,
+            f"{header('🏷️', 'Promosi')}\n"
+            "🏷️ <b>Kode Promo</b> - diskon persen untuk pembelian VIP\n"
+            "🎟️ <b>Voucher</b> - kode klaim hari VIP gratis",
+            promotions_keyboard())
         return True
 
     m = re.fullmatch(r"admin_viplist_(\d+)", data)
@@ -254,7 +264,7 @@ async def handle_callback(query, context, data: str) -> bool:
             query,
             f"{header('📢', 'Pengumuman')}\nKirim pesan yang ingin disebar ke <b>{len(get_all_user_ids())} user</b> bot "
             "(teks, foto, video, dll — format asli dipertahankan).\n\nKetik /cancel untuk batal.",
-            InlineKeyboardMarkup([[Btn("❌ Batal", callback_data="menu_admin")]]))
+            InlineKeyboardMarkup([[Btn("❌ Batal", callback_data="admin_users")]]))
         return True
 
     if data == "admin_ann_go":

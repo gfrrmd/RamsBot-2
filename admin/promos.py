@@ -90,7 +90,7 @@ async def _show_promos(query, page: int = 0):
         rows.append(nav)
         lines.append(page_info(page, total, PAGE))
     rows.append([Btn("➕ Buat Promo", callback_data="admin_promo_add")])
-    rows.append([Btn("🔙 Panel Admin", callback_data="menu_admin")])
+    rows.append([Btn("🔙 Promosi", callback_data="admin_promotions")])
     await edit_or_send(query, "\n".join(lines), InlineKeyboardMarkup(rows))
 
 
@@ -136,7 +136,7 @@ async def _show_vouchers(query, page: int = 0):
         rows.append(nav)
         lines.append(page_info(page, total, PAGE))
     rows.append([Btn("➕ Buat Voucher", callback_data="admin_vch_add"), Btn("📦 Buat Banyak", callback_data="admin_vch_bulk")])
-    rows.append([Btn("🔙 Panel Admin", callback_data="menu_admin")])
+    rows.append([Btn("🔙 Promosi", callback_data="admin_promotions")])
     await edit_or_send(query, "\n".join(lines), InlineKeyboardMarkup(rows))
 
 
