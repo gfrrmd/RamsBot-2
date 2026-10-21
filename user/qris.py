@@ -17,7 +17,7 @@ from auth.states import clear_input_waits, waiting_qris_upload
 from client_manager import active_clients, stop_client_for_user
 from database import delete_user_qris, get_user_qris, is_subscribed, save_user_qris
 from keyboards import qris_keyboard
-from ui import edit_or_send, esc, fmt_dt, header, replace_with_photo
+from ui import edit_or_send, esc, fmt_dt, header_e as header, replace_with_photo
 from utils.helpers import escape_md
 from utils.qris import (
     MAX_AMOUNT,

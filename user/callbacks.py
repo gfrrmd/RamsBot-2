@@ -14,6 +14,7 @@ from database import (
     set_auto_dl_view_once,
 )
 from keyboards import (
+    account_keyboard,
     back_to_fitur_keyboard,
     bc_blacklist_keyboard,
     beli_keyboard,
@@ -23,14 +24,10 @@ from keyboards import (
     timer_keyboard,
     tos_keyboard,
 )
-from ui import build_home_text, edit_or_send, esc, header, session_badge
+from ui import build_home_text, edit_or_send, esc, header, header_e, session_badge
 from user.subscription import build_subscription_text
 from utils.channel_scanner import get_admin_channels
 
-_STATUS_KB = InlineKeyboardMarkup([
-    [InlineKeyboardButton("💎 Beli / Perpanjang VIP", callback_data="pay_menu")],
-    [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu_back")],
-])
 
 
 async def _show_auto_block_menu(query, uid):
@@ -44,7 +41,7 @@ async def _show_auto_block_menu(query, uid):
     watched_ids = {ch["channel_id"] for ch in get_auto_block_channels(uid)}
 
     if not channels:
-        await edit_or_send(query, f"{header('😔', 'Auto Block Leaver')}\nKamu tidak ditemukan sebagai admin di channel/grup manapun.",
+        await edit_or_send(query, f"{header_e('😔', 'Auto Block Leaver')}\nKamu tidak ditemukan sebagai admin di channel/grup manapun.",
                            back_to_fitur_keyboard())
         return
 
@@ -56,7 +53,7 @@ async def _show_auto_block_menu(query, uid):
 
     await edit_or_send(
         query,
-        f"{header('🔒', 'Auto Block Leaver')}\n"
+        f"{header_e('🔒', 'Auto Block Leaver')}\n"
         "Pilih channel yang ingin dipantau.\n"
         "Jika seseorang keluar dari channel yang aktif (✅), akun mereka akan otomatis diblokir dari akun Telegram kamu.\n\n"
         "✅ = aktif  |  ☑️ = nonaktif",
@@ -108,7 +105,7 @@ async def user_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
 
     if data == "menu_subscription":
         user = query.from_user
-        await edit_or_send(query, build_subscription_text(uid, full_name=user.full_name, username=user.username), _STATUS_KB)
+        await edit_or_send(query, build_subscription_text(uid, full_name=user.full_name, username=user.username), account_keyboard())
         return
     if data == "menu_fitur":
         await edit_or_send(query, f"{header('🎯', 'Fitur VIP')}\nPilih fitur di bawah:", fitur_vip_keyboard())
@@ -128,7 +125,7 @@ async def user_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
     if data == "fitur_timer":
         await edit_or_send(
             query,
-            f"{header('⏱️', 'Download Media Timer & View Once')}\n"
+            f"{header_e('⏱️', 'Download Media Timer & View Once')}\n"
             "Simpan foto/video timer yang hanya bisa dilihat sekali (view once).\n\n"
             "📲 <b>Cara pakai - Manual:</b>\nBalas pesan view once/timer dengan perintah:\n<code>.dl</code>\n\n"
             "🤖 <b>Cara pakai - Auto DL (Otomatis):</b>\nAktifkan Auto DL agar bot otomatis menyimpan setiap media view once yang masuk ke chat kamu.\n\n"
@@ -139,12 +136,12 @@ async def user_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
     if data == "vip_toggle_auto_dl":
         current = get_auto_dl_view_once(uid)
         set_auto_dl_view_once(uid, not current)
-        await edit_or_send(query, f"{header('⏱️', 'Auto DL View Once')}\nSekarang: {'ON ✅' if not current else 'OFF ❌'}", timer_keyboard(uid))
+        await edit_or_send(query, f"{header_e('⏱️', 'Auto DL View Once')}\nSekarang: {'ON ✅' if not current else 'OFF ❌'}", timer_keyboard(uid))
         return
     if data == "fitur_copy":
         await edit_or_send(
             query,
-            f"{header('📥', 'Download dari Channel/Grup Private')}\n"
+            f"{header_e('📥', 'Download dari Channel/Grup Private')}\n"
             "Download pesan, foto, atau video dari channel/grup yang dibatasi (restricted/tidak bisa di-forward).\n\n"
             "📝 <b>Cara pakai:</b>\nKetik dimanapun dengan command:\n<code>.copy (link postingan)</code>\n\n"
             "💡 <b>Contoh:</b>\n<code>.copy https://t.me/koleksijee/456</code>",
@@ -154,7 +151,7 @@ async def user_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
     if data == "fitur_story":
         await edit_or_send(
             query,
-            f"{header('🎥', 'Download Story')}\n"
+            f"{header_e('🎥', 'Download Story')}\n"
             "Download story Telegram milik orang lain langsung dari link story-nya.\n\n"
             "📝 <b>Cara pakai:</b>\nKirim link story yang ingin didownload:\n<code>.story (link story)</code>\n\n"
             "💡 <b>Contoh:</b>\n<code>.story https://t.me/username/s/7</code>",
@@ -164,7 +161,7 @@ async def user_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
     if data == "fitur_ping":
         await edit_or_send(
             query,
-            f"{header('🏓', 'Ping')}\n"
+            f"{header_e('🏓', 'Ping')}\n"
             "Cek apakah koneksi session Telethon kamu masih aktif dan berapa lama waktu responnya.\n\n"
             "📝 <b>Cara pakai:</b>\nBuka Saved Messages di Telegram kamu, lalu kirim:\n<code>.ping</code>\n\n"
             "💡 <b>Contoh hasil:</b>\n🏓 Pong! 42ms",
@@ -174,7 +171,7 @@ async def user_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
     if data == "fitur_broadcast":
         await edit_or_send(
             query,
-            f"{header('📢', 'Broadcast')}\n"
+            f"{header_e('📢', 'Broadcast')}\n"
             "Kirim pesan yang sama ke semua grup yang kamu join secara otomatis.\n\n"
             "📝 <b>Cara pakai:</b>\nKetik command berikut dari chat manapun:\n<code>.bc (pesan kamu)</code>\n\n"
             "💡 <b>Contoh:</b>\n<code>.bc Hai, ada yang mau berteman?</code>\n\n"
@@ -185,7 +182,7 @@ async def user_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
     if data == "fitur_acceptall":
         await edit_or_send(
             query,
-            f"{header('✅', 'Auto Approve')}\n"
+            f"{header_e('✅', 'Auto Approve')}\n"
             "Approve semua join request di channel/grup kamu secara otomatis.\n\n"
             "📝 <b>Cara pakai:</b>\nJalankan command di dalam channel, atau sertakan username/link:\n"
             "<code>.acceptall</code>\n<code>.acceptall (username/link channel)</code>\n\n"
@@ -219,7 +216,7 @@ async def user_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
         bl_text = "📋 Blacklist kamu kosong.\nSemua grup akan menerima broadcast." if not rows else f"🚫 <b>{len(rows)} grup diblacklist.</b>"
         await edit_or_send(
             query,
-            f"{header('⛔', 'Blacklist Broadcast')}\n{bl_text}\n\n"
+            f"{header_e('⛔', 'Blacklist Broadcast')}\n{bl_text}\n\n"
             "Untuk mengelola blacklist, gunakan command:\n\n"
             "<code>.addbl</code> — Tambah ke blacklist\n"
             "<code>.addbl (ID Grup)</code> — Tambah ke blacklist by ID\n"
@@ -232,7 +229,7 @@ async def user_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
     if data == "bc_bl_list":
         rows = bc_blacklist_get(uid)
         if not rows:
-            text = f"{header('📝', 'Blacklist BC Kosong')}\nSemua grup akan menerima broadcast kamu."
+            text = f"{header_e('📝', 'Blacklist BC Kosong')}\nSemua grup akan menerima broadcast kamu."
         else:
             lines = [header("🚫", f"Blacklist BC ({len(rows)} grup)")]
             for i, r in enumerate(rows, 1):
