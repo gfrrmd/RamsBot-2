@@ -960,19 +960,19 @@ def set_reminder_stage(user_id: int, stage: int) -> None:
 #  Kategori Data — info database & pembersihan data tidak penting
 # ══════════════════════════════════════════════════════════════════════════════
 
-# Batas umur (hari) sebelum data dianggap layak dibersihkan.
-CLEAN_DAYS = {"orders_dead": 7, "orders_paid": 90, "subs_old": 90, "users_idle": 30}
+_CLEAN_LABELS = {
+    "users": "Pengguna tanpa VIP/trial aktif",
+    "sessions": "Session tersimpan",
+    "subscriptions": "Langganan expired / dicabut / trial",
+    "orders": "Riwayat pesanan",
+    "related": "Pengaturan, QRIS, blacklist, auto block, token",
+    "codes": "Voucher dan kode promo habis / kedaluwarsa",
+}
+CLEAN_KEYS = list(_CLEAN_LABELS)
 
-# Kategori pembersihan. "safe": ikut "Bersihkan Semua". Riwayat lunas TIDAK ikut
-# karena memengaruhi total pendapatan di statistik.
-CLEAN_KEYS = ["orders_dead", "orders_paid", "subs_old", "users_idle", "orphans"]
-CLEAN_SAFE_KEYS = ["orders_dead", "subs_old", "users_idle", "orphans"]
 
-_ORPHAN_TABLES = ["user_settings", "user_qris", "bc_group_blacklist", "auto_block_channels"]
-
-
-def _cutoff(days: int) -> str:
-    return (datetime.now() - timedelta(days=days)).isoformat()
+def clean_label(key: str) -> str:
+    return _CLEAN_LABELS[key]
 
 
 def get_db_info() -> dict:
@@ -987,87 +987,104 @@ def get_db_info() -> dict:
     return info
 
 
-def _clean_where(key: str):
-    """(tabel, klausa WHERE, params) untuk kategori selain 'orphans'."""
-    from config import ADMIN_ID
-    if key == "orders_dead":
-        return "orders", "status IN ('expired','cancelled','rejected') AND updated_at < %s", (_cutoff(CLEAN_DAYS[key]),)
-    if key == "orders_paid":
-        return "orders", "status='paid' AND paid_at < %s", (_cutoff(CLEAN_DAYS[key]),)
-    if key == "subs_old":
-        return "subscriptions", "expired_at < %s AND user_id NOT IN (SELECT user_id FROM sessions)", (_cutoff(CLEAN_DAYS[key]),)
-    if key == "users_idle":
-        # trial_used=1 TIDAK dihapus agar trial tidak bisa dipakai ulang.
-        return "users", (
-            "COALESCE(trial_used,0)=0 AND created_at < %s AND user_id <> %s "
-            "AND user_id NOT IN (SELECT user_id FROM subscriptions) "
-            "AND user_id NOT IN (SELECT user_id FROM sessions) "
-            "AND user_id NOT IN (SELECT user_id FROM orders) "
-            "AND user_id NOT IN (SELECT user_id FROM user_qris)"
-        ), (_cutoff(CLEAN_DAYS[key]), ADMIN_ID)
-    raise KeyError(key)
+# Tabel yang barisnya terikat ke satu user_id (kolom pemilik di elemen kedua).
+_USER_TABLES = [
+    ("users", "user_id"), ("sessions", "user_id"), ("subscriptions", "user_id"),
+    ("orders", "user_id"), ("user_settings", "user_id"), ("user_qris", "user_id"),
+    ("bc_group_blacklist", "user_id"), ("auto_block_channels", "user_id"),
+    ("vip_tokens", "holder_id"),
+]
 
 
-def _orphan_where(table: str) -> str:
-    # Yatim = pemiliknya tidak ada di users DAN tidak punya langganan/session.
-    return ("user_id NOT IN (SELECT user_id FROM users) "
-            "AND user_id NOT IN (SELECT user_id FROM subscriptions) "
-            "AND user_id NOT IN (SELECT user_id FROM sessions)")
-
-
-def cleanup_preview() -> dict:
-    """Jumlah baris yang akan dihapus per kategori (tanpa menghapus apa pun)."""
-    out = {}
-    for key in CLEAN_KEYS:
-        if key == "orphans":
-            out[key] = sum(_scalar(f"SELECT COUNT(*) FROM {t} WHERE {_orphan_where(t)}") for t in _ORPHAN_TABLES)
-        else:
-            table, where, params = _clean_where(key)
-            out[key] = _scalar(f"SELECT COUNT(*) FROM {table} WHERE {where}", params)
-    return out
-
-
-def _clean_exec(cur, key: str) -> int:
-    if key == "orphans":
-        total = 0
-        for t in _ORPHAN_TABLES:
-            cur.execute(f"DELETE FROM {t} WHERE {_orphan_where(t)}")
-            total += cur.rowcount or 0
-        return total
-    table, where, params = _clean_where(key)
-    cur.execute(f"DELETE FROM {table} WHERE {where}", params)
-    return cur.rowcount or 0
-
-
-def cleanup_run_many(keys: list[str], dry_run: bool = False) -> dict:
+def cleanup_all(dry_run: bool = False) -> dict:
     """
-    Hapus beberapa kategori dalam SATU transaksi (semua berhasil atau tidak sama sekali).
-    Urutan tetap: langganan lama dulu agar user idle terdeteksi, data yatim terakhir.
+    Bersihkan semua data yang tidak diperlukan dalam SATU transaksi, tanpa batas waktu.
+
+    Yang DIPERTAHANKAN: admin, user dengan VIP/trial yang masih aktif, dan user yang masih
+    punya pesanan menunggu bayar/verifikasi. Selain itu (belum pernah beli, VIP expired atau
+    dicabut, pemakai trial, sisa data yatim) dihapus beserta session, langganan, pesanan,
+    pengaturan, QRIS, blacklist broadcast, auto block, dan token VIP-nya.
+    Pesanan gagal/batal/kedaluwarsa milik semua user ikut dihapus. Voucher dan promo yang sudah
+    habis atau kedaluwarsa dihapus; paket, pengaturan bot, dan blacklist channel tidak disentuh.
+
+    Dua pengecualian agar kuota tidak bisa diakali setelah pembersihan:
+    - pesanan lunas yang memakai kode promo berkuota yang masih aktif tetap disimpan
+      (jumlah pemakaian promo dihitung dari tabel pesanan);
+    - klaim voucher hanya dihapus bersama voucher-nya.
+
     dry_run=True: jalankan lalu ROLLBACK -> hanya untuk mengetahui jumlah pasti.
+    Return: {kunci: jumlah baris} untuk CLEAN_KEYS, ditambah "user_ids" (daftar user yang dihapus).
     """
-    order = [k for k in CLEAN_KEYS if k in keys]
+    from config import ADMIN_ID
+    now = datetime.now().isoformat()
     conn = get_conn()
     try:
         cur = conn.cursor()
-        result = {}
-        for k in ("subs_old", "orders_dead", "orders_paid", "users_idle", "orphans"):
-            if k in order:
-                result[k] = _clean_exec(cur, k)
+        # 1. Kumpulkan user yang boleh dihapus: semua id yang muncul di tabel mana pun,
+        #    dikurangi admin, VIP/trial aktif, dan pemilik pesanan yang masih terbuka.
+        universe = " UNION ".join(f"SELECT {col} AS uid FROM {t}" for t, col in _USER_TABLES)
+        universe += " UNION SELECT from_id FROM vip_token_log UNION SELECT to_id FROM vip_token_log"
+        cur.execute(
+            f"CREATE TEMP TABLE _clean_ids ON COMMIT DROP AS SELECT uid FROM ({universe}) u "
+            "WHERE uid <> %s "
+            "AND uid NOT IN (SELECT user_id FROM subscriptions WHERE is_active=1 AND expired_at > %s) "
+            "AND uid NOT IN (SELECT user_id FROM orders WHERE status IN ('pending','verifying'))",
+            (ADMIN_ID, now))
+        cur.execute("SELECT uid FROM _clean_ids")
+        user_ids = [r[0] for r in cur.fetchall()]
+
+        result = dict.fromkeys(CLEAN_KEYS, 0)
+
+        # 2. Pesanan: gagal/batal/kedaluwarsa milik siapa pun, dan semua riwayat milik user yang dihapus
+        #    (kecuali pesanan lunas yang masih menjadi hitungan kuota promo aktif).
+        keep_promo = ("promo_id IN (SELECT id FROM promo_codes WHERE is_active=1 AND max_uses>0 "
+                      "AND (expires_at IS NULL OR expires_at > %s))")
+        cur.execute(
+            "DELETE FROM orders WHERE status IN ('expired','cancelled','rejected') "
+            f"OR (user_id IN (SELECT uid FROM _clean_ids) AND status NOT IN ('pending','verifying') "
+            f"AND NOT COALESCE({keep_promo}, FALSE))", (now,))
+        result["orders"] = cur.rowcount or 0
+
+        # 3. Data milik user yang dihapus.
+        for key, table, col in (
+            ("sessions", "sessions", "user_id"),
+            ("subscriptions", "subscriptions", "user_id"),
+        ):
+            cur.execute(f"DELETE FROM {table} WHERE {col} IN (SELECT uid FROM _clean_ids)")
+            result[key] = cur.rowcount or 0
+        for table, col in (("user_settings", "user_id"), ("user_qris", "user_id"),
+                           ("bc_group_blacklist", "user_id"), ("auto_block_channels", "user_id"),
+                           ("vip_tokens", "holder_id")):
+            cur.execute(f"DELETE FROM {table} WHERE {col} IN (SELECT uid FROM _clean_ids)")
+            result["related"] += cur.rowcount or 0
+        cur.execute("DELETE FROM vip_token_log WHERE from_id IN (SELECT uid FROM _clean_ids) "
+                    "AND to_id IN (SELECT uid FROM _clean_ids)")
+        result["related"] += cur.rowcount or 0
+        cur.execute("DELETE FROM users WHERE user_id IN (SELECT uid FROM _clean_ids)")
+        result["users"] = cur.rowcount or 0
+
+        # 4. Voucher habis/kedaluwarsa (beserta klaimnya) dan promo kedaluwarsa.
+        cur.execute(
+            "DELETE FROM vouchers v WHERE (v.expires_at IS NOT NULL AND v.expires_at <= %s) "
+            "OR (v.max_claims > 0 AND (SELECT COUNT(*) FROM voucher_claims c WHERE c.voucher_id=v.id) >= v.max_claims)",
+            (now,))
+        result["codes"] += cur.rowcount or 0
+        cur.execute("DELETE FROM voucher_claims WHERE voucher_id NOT IN (SELECT id FROM vouchers)")
+        result["related"] += cur.rowcount or 0
+        cur.execute("DELETE FROM promo_codes WHERE expires_at IS NOT NULL AND expires_at <= %s", (now,))
+        result["codes"] += cur.rowcount or 0
+
         if dry_run:
             conn.rollback()
         else:
             conn.commit()
-        return {k: result[k] for k in order}
+        result["user_ids"] = user_ids
+        return result
     except Exception:
         conn.rollback()
         raise
     finally:
         conn.close()
-
-
-def cleanup_run(key: str) -> int:
-    """Hapus satu kategori. Return jumlah baris terhapus."""
-    return cleanup_run_many([key])[key]
 
 
 def vacuum_db() -> None:

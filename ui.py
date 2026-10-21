@@ -92,6 +92,11 @@ def token_notice(tok: dict | None) -> str:
     )
 
 
+def header_e(emoji: str, title: str) -> str:
+    """Judul tebal dengan emoji (dipakai layar Fitur VIP yang mempertahankan tampilan aslinya)."""
+    return "<b>" + emoji + " " + esc(title) + "</b>\n"
+
+
 # ── Status langganan ──────────────────────────────────────────────────────────
 
 def get_sub_state(uid: int) -> dict:

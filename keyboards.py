@@ -7,7 +7,7 @@ HOME = Btn("🏠 Menu Utama", callback_data="menu_back")
 
 
 def nav_row(prefix: str, page: int, total: int, per_page: int) -> list:
-    """Baris navigasi ⬅️ Back / Next ➡️ untuk daftar berhalaman. Kosong jika hanya 1 halaman.
+    """Baris navigasi Back / Next untuk daftar berhalaman. Kosong jika hanya 1 halaman.
     callback_data = f"{prefix}{nomor_halaman}"."""
     row = []
     if page > 0:
@@ -25,17 +25,26 @@ def page_info(page: int, total: int, per_page: int) -> str:
 # ── User ──────────────────────────────────────────────────────────────────────
 
 def main_keyboard(uid):
+    """Menu utama: 3 baris inti. Status, Token VIP, dan Voucher dipindah ke menu Akun Saya."""
     rows = [
         [Btn("✨ Setup Bot", callback_data="menu_setup")],
-        [Btn("🎯 Fitur VIP", callback_data="menu_fitur"), Btn("👤 Status Akun", callback_data="menu_subscription")],
-        [Btn("📖 Panduan", callback_data="menu_beli"), Btn("💎 Beli VIP", callback_data="pay_menu")],
-        [Btn("🔑 Token VIP", callback_data="tok_menu"), Btn("🎟️ Klaim Voucher", callback_data="vch_enter")],
+        [Btn("🎯 Fitur VIP", callback_data="menu_fitur"), Btn("💎 Beli VIP", callback_data="pay_menu")],
+        [Btn("👤 Akun Saya", callback_data="menu_subscription"), Btn("📖 Panduan", callback_data="menu_beli")],
     ]
     if WEBAPP_URL:
         rows.append([Btn("🖥️ Buka Mini App", web_app=WebAppInfo(url=WEBAPP_URL))])
     if uid == ADMIN_ID:
         rows.append([Btn("🛠️ Panel Admin", callback_data="menu_admin")])
     return InlineKeyboardMarkup(rows)
+
+
+def account_keyboard():
+    """Menu Akun Saya: pembelian, token VIP, dan klaim voucher dalam satu tempat."""
+    return InlineKeyboardMarkup([
+        [Btn("💎 Beli / Perpanjang VIP", callback_data="pay_menu")],
+        [Btn("🔑 Token VIP", callback_data="tok_menu"), Btn("🎟️ Klaim Voucher", callback_data="vch_enter")],
+        [HOME],
+    ])
 
 
 def tos_keyboard():
@@ -48,9 +57,8 @@ def tos_keyboard():
 def not_subscribed_keyboard(uid):
     rows = [[Btn("💎 Beli VIP", callback_data="pay_menu")]]
     if not has_used_trial(uid):
-        rows.append([Btn("🎟️ Coba Trial Gratis", callback_data="setup_try_trial")])
-    rows.append([Btn("📖 Panduan", callback_data="menu_beli")])
-    rows.append([Btn("🔙 Kembali", callback_data="menu_back")])
+        rows[0].append(Btn("🎟️ Coba Trial Gratis", callback_data="setup_try_trial"))
+    rows.append([Btn("📖 Panduan", callback_data="menu_beli"), Btn("🔙 Kembali", callback_data="menu_back")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -66,7 +74,7 @@ def fitur_vip_keyboard():
         [Btn("🎥 Story", callback_data="fitur_story"), Btn("📢 Broadcast", callback_data="fitur_broadcast")],
         [Btn("💳 QRIS Dinamis", callback_data="fitur_qris"), Btn("✅ Auto Approve", callback_data="fitur_acceptall")],
         [Btn("🔒 Auto Block Leaver", callback_data="fitur_autoblock"), Btn("🏓 Ping", callback_data="fitur_ping")],
-        [HOME],
+        [Btn("🏠 Menu Utama", callback_data="menu_back")],
     ])
 
 
@@ -114,11 +122,11 @@ def qris_keyboard(has_qris: bool):
 # ── Admin ─────────────────────────────────────────────────────────────────────
 
 def admin_keyboard(pending: int = 0):
-    pay_label = f"💳 Pembayaran{f' ({pending})' if pending else ''}"
+    """Panel admin: 3 baris kategori. Pengumuman masuk Pengguna; Kode Promo dan Voucher masuk Promosi."""
+    pay_label = f"💳 Pembayaran ({pending})" if pending else "💳 Pembayaran"
     rows = [
         [Btn("📊 Statistik", callback_data="admin_stats"), Btn(pay_label, callback_data="admin_pay")],
-        [Btn("👥 Kelola User", callback_data="admin_users"), Btn("📢 Pengumuman", callback_data="admin_announce")],
-        [Btn("🏷️ Kode Promo", callback_data="admin_promos"), Btn("🎟️ Voucher", callback_data="admin_vchs")],
+        [Btn("👥 Pengguna", callback_data="admin_users"), Btn("🏷️ Promosi", callback_data="admin_promotions")],
         [Btn("🔒 Blacklist", callback_data="admin_blacklist"), Btn("🗄️ Data", callback_data="admin_data")],
     ]
     if WEBAPP_URL:
@@ -129,10 +137,19 @@ def admin_keyboard(pending: int = 0):
 
 
 def users_keyboard():
-    """Kategori Kelola User: daftar, cek, gift, dan cabut VIP."""
+    """Kategori Pengguna: daftar, cek, gift, cabut VIP, dan pengumuman."""
     return InlineKeyboardMarkup([
         [Btn("👑 List VIP", callback_data="admin_viplist_0"), Btn("🔎 Cek User", callback_data="admin_finduser")],
         [Btn("🎁 Gift VIP", callback_data="admin_gift"), Btn("🚫 Revoke VIP", callback_data="admin_revoke")],
+        [Btn("📢 Pengumuman", callback_data="admin_announce")],
+        [Btn("🔙 Panel Admin", callback_data="menu_admin")],
+    ])
+
+
+def promotions_keyboard():
+    """Kategori Promosi: kode promo dan voucher."""
+    return InlineKeyboardMarkup([
+        [Btn("🏷️ Kode Promo", callback_data="admin_promos"), Btn("🎟️ Voucher", callback_data="admin_vchs")],
         [Btn("🔙 Panel Admin", callback_data="menu_admin")],
     ])
 

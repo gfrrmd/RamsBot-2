@@ -31,24 +31,29 @@ Hasil `.qris` dikirim di chat tempat command diketik.
 | 💳 Pembayaran | Set QRIS penerima, kelola paket & harga, kode unik, batas waktu, verifikasi order |
 | 🗄️ Data | Satu kategori untuk semua hal database: info ukuran & jumlah data, Backup DB, Restore DB (`.sql`/`.sql.gz`), Auto Backup, dan Bersihkan Data |
 | 💾 Auto Backup (di menu Data) | Jadwal 6j/12j/24j/3h/7h → PM admin (+ channel opsional), `.sql.gz` |
-| 🧹 Bersihkan Data (di menu Data) | Hapus data tidak penting dengan pratinjau jumlah, konfirmasi, dan backup otomatis dulu |
+| Bersihkan Data (di menu Data) | Hapus semua data tidak penting dengan pratinjau jumlah, konfirmasi, dan backup otomatis dulu |
 | 👑 List VIP / 🔎 Cek User | Daftar VIP berpaginasi; kartu user dengan tombol +7/+30 hari & revoke |
 | 📢 Pengumuman | Kirim pesan (teks/media) ke semua user bot |
 | 🎁 Gift / 🚫 Revoke / 🔒 Blacklist | Fitur lama, tetap ada |
 
-### 🧹 Bersihkan Data
-Panel Admin → 🗄️ Data → 🧹 Bersihkan Data. Kategori yang bisa dihapus:
+### Menu Bot
+**User (`/start`):** Setup Bot, Fitur VIP, Beli VIP, Akun Saya, Panduan. Status akun, Token VIP, dan Klaim Voucher ada di Akun Saya.  Menu Fitur VIP tetap per fitur, masing-masing dengan panduannya sendiri.
 
-| Kategori | Kriteria |
+**Admin (`/admin`):** Statistik, Pembayaran, Pengguna (List VIP, Cek User, Gift, Revoke, Pengumuman), Promosi (Kode Promo, Voucher), Blacklist, Data.
+
+### Bersihkan Data
+Panel Admin > Data > Bersihkan Data. Satu tombol, tanpa batas waktu. Yang dihapus:
+
+| Data | Keterangan |
 |---|---|
-| Pesanan gagal | status expired / cancelled / rejected, lebih dari 7 hari |
-| Riwayat pesanan lunas | status paid, lebih dari 90 hari (tidak ikut "Bersihkan Semua" karena memengaruhi total pendapatan) |
-| Langganan expired lama | expired lebih dari 90 hari dan user tidak punya session |
-| User tidak aktif | daftar lebih dari 30 hari, tanpa langganan/session/pesanan/QRIS, belum pernah trial |
-| Data yatim | pengaturan/QRIS/blacklist milik user yang sudah tidak ada |
+| User | Belum pernah membeli, VIP expired atau dicabut, pemakai trial (trial bisa dipakai lagi), dan sisa data yatim |
+| Session, langganan, pengaturan, QRIS, blacklist broadcast, auto block, token VIP | Milik user yang dihapus |
+| Pesanan | Semua riwayat milik user yang dihapus, serta pesanan expired/cancelled/rejected milik siapa pun |
+| Voucher dan kode promo | Yang sudah habis diklaim atau kedaluwarsa |
 
-**Tidak pernah dihapus:** session user, VIP aktif, pesanan pending/verifying, paket, pengaturan bot, blacklist channel, dan user yang pernah memakai trial (agar trial tidak bisa diulang).
-Setiap pembersihan menampilkan jumlah pasti lebih dulu, meminta konfirmasi, mengirim backup ke admin, lalu menjalankan penghapusan dalam satu transaksi.
+**Dipertahankan:** akun admin, VIP dan trial yang masih aktif (termasuk riwayat pesanannya), user dengan pesanan menunggu bayar/verifikasi, paket, pengaturan bot, blacklist channel, voucher dan promo yang masih berlaku.
+Dua pengecualian agar kuota tidak bisa diakali: pesanan lunas yang memakai kode promo berkuota yang masih aktif tetap disimpan, dan klaim voucher hanya dihapus bersama vouchernya.
+Pembersihan menampilkan jumlah pasti lebih dulu, meminta konfirmasi, mengirim backup ke admin, lalu menghapus dalam satu transaksi. Statistik pendapatan berkurang sesuai pesanan lunas yang dihapus.
 
 ### 💳 Alur Pembayaran
 1. Admin: Panel Admin → Pembayaran → **Set QRIS Bayar** + **Kelola Paket** (`Nama | Hari | Harga`).
