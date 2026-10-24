@@ -77,6 +77,26 @@ def kv(label: str, value, width: int = 0) -> str:
     return f"{label}: {value}"
 
 
+def token_notice(tok: dict | None) -> str:
+    """Blok teks token VIP + himbauan menyimpan kode (dipakai setelah beli VIP / klaim voucher)."""
+    if not tok:
+        return ""
+    return (
+        "🔑 <b>Token VIP kamu</b>\n"
+        f"<code>{tok['token']}</code>\n"
+        f"Dipakai untuk memindahkan VIP ke akun Telegram lain (maksimal {tok['max_uses']} kali) "
+        "jika akun ini terkena banned, tanpa perlu beli VIP lagi.\n"
+        "⚠️ <b>Simpan kode ini sekarang</b> di tempat aman di luar akun Telegram ini, misalnya catatan HP "
+        "atau password manager. Jika akun ini dibanned, kamu tidak bisa membuka kode ini lagi. "
+        "Jangan bagikan ke siapa pun. Kode berganti dan pemakaian kembali ke 0 saat kamu membeli VIP periode berikutnya."
+    )
+
+
+def header_e(emoji: str, title: str) -> str:
+    """Judul tebal dengan emoji (dipakai layar Fitur VIP yang mempertahankan tampilan aslinya)."""
+    return "<b>" + emoji + " " + esc(title) + "</b>\n"
+
+
 # ── Status langganan ──────────────────────────────────────────────────────────
 
 def get_sub_state(uid: int) -> dict:
@@ -182,4 +202,5 @@ STATUS_LABEL = {
     "rejected": "❌ Ditolak",
     "expired": "⌛ Kedaluwarsa",
     "cancelled": "🚫 Dibatalkan",
+    "revoked": "⛔ Dicabut admin",
 }

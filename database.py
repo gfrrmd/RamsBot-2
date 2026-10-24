@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 import psycopg2
 
 from config import DATABASE_URL
+from utils.codes import MAX_TOKEN_USES, CodeError, generate_code, generate_token, promo_problem
 
 
 def get_conn():
@@ -72,6 +73,17 @@ def init_db():
             UNIQUE(user_id, channel_id)
         )
     """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS rich_targets (
+            id SERIAL PRIMARY KEY,
+            user_id BIGINT NOT NULL,
+            chat_id BIGINT NOT NULL,
+            title TEXT,
+            chat_type TEXT,
+            added_at TEXT NOT NULL,
+            UNIQUE (user_id, chat_id)
+        )
+    """)
     # ── Tabel baru (v2) ──
     c.execute("ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS reminder_stage INTEGER DEFAULT 0")
     c.execute("""
@@ -118,8 +130,69 @@ def init_db():
             handled_by BIGINT
         )
     """)
+    # v3: verifikasi otomatis bukti bayar (OCR) & pembatalan oleh admin
+    c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS proof_hash TEXT")
+    c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS verified_by TEXT")
+    c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS verify_note TEXT")
+    c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS ocr_attempts INTEGER DEFAULT 0")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_orders_proof_hash ON orders(proof_hash)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_orders_user ON orders(user_id)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status)")
+    # v4: token VIP, kode promo, voucher
+    c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS promo_id INTEGER")
+    c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS promo_code TEXT")
+    c.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS discount BIGINT DEFAULT 0")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_orders_promo ON orders(promo_id)")
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS vip_tokens (
+            token TEXT PRIMARY KEY,
+            holder_id BIGINT NOT NULL UNIQUE,
+            uses INTEGER NOT NULL DEFAULT 0,
+            max_uses INTEGER NOT NULL DEFAULT 3,
+            created_at TEXT,
+            updated_at TEXT
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS vip_token_log (
+            id SERIAL PRIMARY KEY,
+            token TEXT NOT NULL,
+            from_id BIGINT NOT NULL,
+            to_id BIGINT NOT NULL,
+            created_at TEXT
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS promo_codes (
+            id SERIAL PRIMARY KEY,
+            code TEXT NOT NULL UNIQUE,
+            percent INTEGER NOT NULL,
+            max_uses INTEGER NOT NULL DEFAULT 0,
+            expires_at TEXT,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS vouchers (
+            id SERIAL PRIMARY KEY,
+            code TEXT NOT NULL UNIQUE,
+            days INTEGER NOT NULL,
+            max_claims INTEGER NOT NULL DEFAULT 1,
+            expires_at TEXT,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS voucher_claims (
+            id SERIAL PRIMARY KEY,
+            voucher_id INTEGER NOT NULL,
+            user_id BIGINT NOT NULL,
+            claimed_at TEXT,
+            UNIQUE (voucher_id, user_id)
+        )
+    """)
     conn.commit()
     conn.close()
 
@@ -462,13 +535,11 @@ def delete_user_qris(user_id: int) -> bool:
 
 # ── Langganan: perpanjang (menumpuk) ───────────────────────────────────────────
 
-def extend_subscription(user_id: int, days: int) -> datetime:
-    """
-    Tambah masa VIP. Jika VIP masih aktif, hari ditambahkan di atas tanggal expired
-    saat ini (perpanjang). Jika belum/sudah habis/trial, hitung dari sekarang.
-    """
+def _extend_sub_cur(c, user_id: int, days: int) -> datetime:
+    """Isi logika perpanjang pada cursor yang sudah ada (dipakai juga di dalam transaksi lain)."""
     now = datetime.now()
-    row = _run("SELECT paid_at, expired_at, is_active, plan FROM subscriptions WHERE user_id=%s", (user_id,), "one")
+    c.execute("SELECT paid_at, expired_at, is_active, plan FROM subscriptions WHERE user_id=%s", (user_id,))
+    row = c.fetchone()
     base, paid_at = now, now.isoformat()
     if row and row[2] and row[3] == "vip":
         try:
@@ -479,7 +550,7 @@ def extend_subscription(user_id: int, days: int) -> datetime:
         except Exception:
             pass
     expired = base + timedelta(days=days)
-    _run(
+    c.execute(
         """
         INSERT INTO subscriptions (user_id, plan, paid_at, expired_at, is_active, reminder_stage)
         VALUES (%s,'vip',%s,%s,1,0)
@@ -489,6 +560,20 @@ def extend_subscription(user_id: int, days: int) -> datetime:
         (user_id, paid_at, expired.isoformat()),
     )
     return expired
+
+
+def extend_subscription(user_id: int, days: int) -> datetime:
+    """
+    Tambah masa VIP. Jika VIP masih aktif, hari ditambahkan di atas tanggal expired
+    saat ini (perpanjang). Jika belum/sudah habis/trial, hitung dari sekarang.
+    """
+    conn = get_conn()
+    try:
+        expired = _extend_sub_cur(conn.cursor(), user_id, days)
+        conn.commit()
+        return expired
+    finally:
+        conn.close()
 
 
 # ── Paket VIP ──────────────────────────────────────────────────────────────────
@@ -533,7 +618,8 @@ def get_plan(plan_id: int) -> dict | None:
 # ── Order pembayaran ───────────────────────────────────────────────────────────
 
 _ORDER_COLS = ("id, user_id, plan_id, plan_name, days, base_price, unique_code, total, status, "
-               "qris_payload, proof_file_id, created_at, updated_at, paid_at, handled_by")
+               "qris_payload, proof_file_id, created_at, updated_at, paid_at, handled_by, verified_by, verify_note, "
+               "promo_id, promo_code, discount")
 _ORDER_KEYS = [k.strip() for k in _ORDER_COLS.split(",")]
 
 
@@ -546,18 +632,41 @@ def active_order_totals() -> set[int]:
     return {r[0] for r in rows}
 
 
-def create_order(user_id: int, plan: dict, unique_code: int, total: int, qris_payload: str) -> int:
+def create_order(user_id: int, plan: dict, unique_code: int, total: int, qris_payload: str,
+                 promo: dict | None = None, discount: int = 0) -> int:
+    """
+    Buat order. Jika promo diberikan, kuota & batas per-user dicek ulang di dalam transaksi
+    yang mengunci baris promo (anti dua user merebut kuota terakhir). Raise CodeError bila ditolak.
+    total = harga paket - diskon + kode unik (dihitung pemanggil).
+    """
     now = _now_iso()
-    row = _run(
-        """
-        INSERT INTO orders (user_id, plan_id, plan_name, days, base_price, unique_code, total,
-                            status, qris_payload, created_at, updated_at)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,'pending',%s,%s,%s) RETURNING id
-        """,
-        (user_id, plan["id"], plan["name"], plan["days"], plan["price"], unique_code, total, qris_payload, now, now),
-        "one",
-    )
-    return row[0]
+    cols = ("INSERT INTO orders (user_id, plan_id, plan_name, days, base_price, unique_code, total, status, "
+            "qris_payload, created_at, updated_at, promo_id, promo_code, discount) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,'pending',%s,%s,%s,%s,%s,%s) RETURNING id")
+    params = (user_id, plan["id"], plan["name"], plan["days"], plan["price"], unique_code, total,
+              qris_payload, now, now, promo["id"] if promo else None, promo["code"] if promo else None,
+              discount if promo else 0)
+    if not promo:
+        return _run(cols, params, "one")[0]
+    conn = get_conn()
+    try:
+        c = conn.cursor()
+        c.execute(f"SELECT {_PROMO_COLS} FROM promo_codes WHERE id=%s FOR UPDATE", (promo["id"],))
+        r = c.fetchone()
+        fresh = _promo(r) if r else None
+        used, user_used = _promo_counts(c, promo["id"], user_id)
+        problem = promo_problem(fresh, used, user_used, datetime.now())
+        if problem:
+            raise problem
+        c.execute(cols, params)
+        oid = c.fetchone()[0]
+        conn.commit()
+        return oid
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def get_order(order_id: int) -> dict | None:
@@ -574,12 +683,33 @@ def get_open_order(user_id: int) -> dict | None:
     return _order(r) if r else None
 
 
-def set_order_proof(order_id: int, file_id: str) -> bool:
+def set_order_proof(order_id: int, file_id: str, proof_hash: str | None = None, status: str = "verifying") -> bool:
+    """Simpan bukti bayar. status='pending' dipakai saat OCR gagal & user diminta kirim ulang."""
     return (_run(
-        "UPDATE orders SET proof_file_id=%s, status='verifying', updated_at=%s "
+        "UPDATE orders SET proof_file_id=%s, proof_hash=%s, status=%s, updated_at=%s "
         "WHERE id=%s AND status IN ('pending','verifying')",
-        (file_id, _now_iso(), order_id), "rowcount",
+        (file_id, proof_hash, status, _now_iso(), order_id), "rowcount",
     ) or 0) > 0
+
+
+def bump_ocr_attempts(order_id: int) -> int:
+    row = _run("UPDATE orders SET ocr_attempts=COALESCE(ocr_attempts,0)+1 WHERE id=%s RETURNING ocr_attempts",
+               (order_id,), "one")
+    return row[0] if row else 0
+
+
+def find_duplicate_proof(proof_hash: str, exclude_order_id: int) -> dict | None:
+    """Order LAIN yang sudah memakai gambar bukti identik (anti bukti dipakai ulang)."""
+    r = _run(
+        f"SELECT {_ORDER_COLS} FROM orders WHERE proof_hash=%s AND id<>%s "
+        "AND status IN ('verifying','paid','rejected','revoked') ORDER BY id DESC LIMIT 1",
+        (proof_hash, exclude_order_id), "one",
+    )
+    return _order(r) if r else None
+
+
+def set_order_note(order_id: int, note: str) -> None:
+    _run("UPDATE orders SET verify_note=%s WHERE id=%s", (note[:500], order_id))
 
 
 def update_order_status(order_id: int, status: str, only_from: tuple = (), handled_by: int | None = None) -> bool:
@@ -591,44 +721,122 @@ def update_order_status(order_id: int, status: str, only_from: tuple = (), handl
     return (_run(sql, tuple(params), "rowcount") or 0) > 0
 
 
-def approve_order(order_id: int, admin_id: int) -> dict | None:
+def approve_order(order_id: int, admin_id: int, verified_by: str = "admin", note: str | None = None) -> dict | None:
     """
     Setujui order secara atomik (anti double-approve) lalu perpanjang VIP.
+    verified_by: 'admin' (manual) atau 'auto' (OCR). admin_id=0 untuk persetujuan bot.
     Return order (dengan key 'new_expired') atau None jika sudah diproses.
     """
     now = _now_iso()
     changed = _run(
-        "UPDATE orders SET status='paid', paid_at=%s, updated_at=%s, handled_by=%s "
+        "UPDATE orders SET status='paid', paid_at=%s, updated_at=%s, handled_by=%s, verified_by=%s, "
+        "verify_note=COALESCE(%s, verify_note) "
         "WHERE id=%s AND status IN ('pending','verifying','expired')",
-        (now, now, admin_id, order_id), "rowcount",
+        (now, now, admin_id, verified_by, note, order_id), "rowcount",
     )
     if not changed:
         return None
     order = get_order(order_id)
     order["new_expired"] = extend_subscription(order["user_id"], order["days"])
+    # Setiap pembelian VIP menerbitkan token baru: kode berganti dan pemakaian kembali ke 0.
+    order["token"] = issue_token(order["user_id"])
     return order
 
 
-def list_orders(status: str | tuple | None = None, limit: int = 8, offset: int = 0) -> list[dict]:
-    sql = f"SELECT {_ORDER_COLS} FROM orders"
-    params: list = []
-    if status:
-        statuses = (status,) if isinstance(status, str) else tuple(status)
-        sql += " WHERE status IN (" + ",".join(["%s"] * len(statuses)) + ")"
-        params += list(statuses)
-    sql += " ORDER BY id DESC LIMIT %s OFFSET %s"
-    params += [limit, offset]
-    return [_order(r) for r in _run(sql, tuple(params), "all")]
+def _sub_is_live(row, now: datetime) -> bool:
+    """row = (expired_at, is_active, plan). True bila VIP berbayar masih aktif dan belum habis."""
+    if not row or not row[1] or row[2] != "vip":
+        return False
+    try:
+        return datetime.fromisoformat(row[0]) > now
+    except Exception:
+        return False
 
 
-def count_orders(status: str | tuple | None = None) -> int:
-    sql = "SELECT COUNT(*) FROM orders"
-    params: list = []
+def _follow_token_chain(user_id: int, max_hops: int = 5) -> int:
+    """Telusuri perpindahan token dari user_id sampai pemegang terakhir (maks 3x pindah, batas hop berjaga-jaga)."""
+    current, seen = user_id, {user_id}
+    for _ in range(max_hops):
+        r = _run("SELECT to_id FROM vip_token_log WHERE from_id=%s ORDER BY id DESC LIMIT 1", (current,), "one")
+        if not r or r[0] in seen:
+            break
+        current = r[0]
+        seen.add(current)
+    return current
+
+
+def revoke_paid_order(order_id: int, admin_id: int) -> dict | None:
+    """
+    Batalkan order yang sudah 'paid' (mis. bukti dipalsukan): status → 'revoked' dan hari yang
+    diberikan order ini DIKURANGI dari masa VIP (hari dari pembelian sah lain tetap utuh).
+    Jika sisa masa VIP jadi <= 0, langganan dinonaktifkan. Return order + 'new_expired' + 'deactivated'.
+    """
+    changed = _run(
+        "UPDATE orders SET status='revoked', updated_at=%s, handled_by=%s WHERE id=%s AND status='paid'",
+        (_now_iso(), admin_id, order_id), "rowcount",
+    )
+    if not changed:
+        return None
+    order = get_order(order_id)
+    uid, now = order["user_id"], datetime.now()
+    row = _run("SELECT expired_at, is_active, plan FROM subscriptions WHERE user_id=%s", (uid,), "one")
+    if not _sub_is_live(row, now):
+        # VIP pembeli mungkin sudah dipindahkan lewat token (mis. bukti palsu lalu langsung pindah akun):
+        # ikuti rantai perpindahan agar pembatalan mengenai pemegang VIP saat ini.
+        holder = _follow_token_chain(uid)
+        if holder != uid:
+            uid = holder
+            row = _run("SELECT expired_at, is_active, plan FROM subscriptions WHERE user_id=%s", (uid,), "one")
+    order["holder_id"] = uid
+    order["new_expired"], order["deactivated"] = None, False
+    if row and row[1] and row[2] == "vip":
+        try:
+            new_exp = datetime.fromisoformat(row[0]) - timedelta(days=order["days"])
+        except Exception:
+            new_exp = now
+        if new_exp <= now:
+            _run("UPDATE subscriptions SET is_active=0, expired_at=%s WHERE user_id=%s", (now.isoformat(), uid))
+            order["deactivated"] = True
+        else:
+            _run("UPDATE subscriptions SET expired_at=%s, reminder_stage=0 WHERE user_id=%s", (new_exp.isoformat(), uid))
+        order["new_expired"] = new_exp
+    return order
+
+
+# ── Daftar user yang WAJIB verifikasi manual (mis. setelah terbukti curang) ────
+
+def get_manual_only_users() -> set[int]:
+    raw = get_setting("pay_manual_users", "") or ""
+    return {int(x) for x in raw.split(",") if x.strip().isdigit()}
+
+
+def add_manual_only_user(user_id: int) -> None:
+    ids = get_manual_only_users() | {int(user_id)}
+    set_setting("pay_manual_users", ",".join(str(i) for i in sorted(ids)))
+
+
+def _order_where(status, verified_by) -> tuple[str, list]:
+    conds, params = [], []
     if status:
         statuses = (status,) if isinstance(status, str) else tuple(status)
-        sql += " WHERE status IN (" + ",".join(["%s"] * len(statuses)) + ")"
+        conds.append("status IN (" + ",".join(["%s"] * len(statuses)) + ")")
         params += list(statuses)
-    return _run(sql, tuple(params), "one")[0]
+    if verified_by:
+        conds.append("verified_by=%s")
+        params.append(verified_by)
+    return (" WHERE " + " AND ".join(conds)) if conds else "", params
+
+
+def list_orders(status: str | tuple | None = None, limit: int = 8, offset: int = 0,
+                verified_by: str | None = None) -> list[dict]:
+    where, params = _order_where(status, verified_by)
+    sql = f"SELECT {_ORDER_COLS} FROM orders{where} ORDER BY id DESC LIMIT %s OFFSET %s"
+    return [_order(r) for r in _run(sql, tuple(params + [limit, offset]), "all")]
+
+
+def count_orders(status: str | tuple | None = None, verified_by: str | None = None) -> int:
+    where, params = _order_where(status, verified_by)
+    return _run(f"SELECT COUNT(*) FROM orders{where}", tuple(params), "one")[0]
 
 
 def get_user_orders(user_id: int, limit: int = 8) -> list[dict]:
@@ -722,6 +930,7 @@ def get_user_profile(user_id: int) -> dict | None:
         "has_qris": get_user_qris(user_id) is not None,
         "paid_orders": paid[0],
         "paid_total": int(paid[1]),
+        "token": get_token(user_id),
     }
 
 
@@ -742,6 +951,18 @@ def get_subs_for_reminder() -> list[dict]:
     return [{"user_id": r[0], "plan": r[1], "expired_at": r[2], "stage": r[3]} for r in rows]
 
 
+def get_sync_user_ids() -> tuple[list[int], list[int]]:
+    """
+    Untuk sinkronisasi client dengan database (VIP bisa berubah lewat Mini App di luar proses bot).
+    Return (user yang HARUS berjalan: punya session & VIP aktif, user yang HARUS berhenti: langganan sudah mati).
+    """
+    now = _now_iso()
+    live = _run("SELECT s.user_id FROM sessions s JOIN subscriptions b ON b.user_id=s.user_id "
+                "WHERE b.is_active=1 AND b.expired_at > %s", (now,), "all")
+    dead = _run("SELECT user_id FROM subscriptions WHERE is_active=0 OR expired_at <= %s", (now,), "all")
+    return [r[0] for r in live], [r[0] for r in dead]
+
+
 def set_reminder_stage(user_id: int, stage: int) -> None:
     _run("UPDATE subscriptions SET reminder_stage=%s WHERE user_id=%s", (stage, user_id))
 
@@ -750,19 +971,19 @@ def set_reminder_stage(user_id: int, stage: int) -> None:
 #  Kategori Data — info database & pembersihan data tidak penting
 # ══════════════════════════════════════════════════════════════════════════════
 
-# Batas umur (hari) sebelum data dianggap layak dibersihkan.
-CLEAN_DAYS = {"orders_dead": 7, "orders_paid": 90, "subs_old": 90, "users_idle": 30}
+_CLEAN_LABELS = {
+    "users": "Pengguna tanpa VIP/trial aktif",
+    "sessions": "Session tersimpan",
+    "subscriptions": "Langganan expired / dicabut / trial",
+    "orders": "Riwayat pesanan",
+    "related": "Pengaturan, QRIS, blacklist, auto block, token",
+    "codes": "Voucher dan kode promo habis / kedaluwarsa",
+}
+CLEAN_KEYS = list(_CLEAN_LABELS)
 
-# Kategori pembersihan. "safe": ikut "Bersihkan Semua". Riwayat lunas TIDAK ikut
-# karena memengaruhi total pendapatan di statistik.
-CLEAN_KEYS = ["orders_dead", "orders_paid", "subs_old", "users_idle", "orphans"]
-CLEAN_SAFE_KEYS = ["orders_dead", "subs_old", "users_idle", "orphans"]
 
-_ORPHAN_TABLES = ["user_settings", "user_qris", "bc_group_blacklist", "auto_block_channels"]
-
-
-def _cutoff(days: int) -> str:
-    return (datetime.now() - timedelta(days=days)).isoformat()
+def clean_label(key: str) -> str:
+    return _CLEAN_LABELS[key]
 
 
 def get_db_info() -> dict:
@@ -777,87 +998,104 @@ def get_db_info() -> dict:
     return info
 
 
-def _clean_where(key: str):
-    """(tabel, klausa WHERE, params) untuk kategori selain 'orphans'."""
-    from config import ADMIN_ID
-    if key == "orders_dead":
-        return "orders", "status IN ('expired','cancelled','rejected') AND updated_at < %s", (_cutoff(CLEAN_DAYS[key]),)
-    if key == "orders_paid":
-        return "orders", "status='paid' AND paid_at < %s", (_cutoff(CLEAN_DAYS[key]),)
-    if key == "subs_old":
-        return "subscriptions", "expired_at < %s AND user_id NOT IN (SELECT user_id FROM sessions)", (_cutoff(CLEAN_DAYS[key]),)
-    if key == "users_idle":
-        # trial_used=1 TIDAK dihapus agar trial tidak bisa dipakai ulang.
-        return "users", (
-            "COALESCE(trial_used,0)=0 AND created_at < %s AND user_id <> %s "
-            "AND user_id NOT IN (SELECT user_id FROM subscriptions) "
-            "AND user_id NOT IN (SELECT user_id FROM sessions) "
-            "AND user_id NOT IN (SELECT user_id FROM orders) "
-            "AND user_id NOT IN (SELECT user_id FROM user_qris)"
-        ), (_cutoff(CLEAN_DAYS[key]), ADMIN_ID)
-    raise KeyError(key)
+# Tabel yang barisnya terikat ke satu user_id (kolom pemilik di elemen kedua).
+_USER_TABLES = [
+    ("users", "user_id"), ("sessions", "user_id"), ("subscriptions", "user_id"),
+    ("orders", "user_id"), ("user_settings", "user_id"), ("user_qris", "user_id"),
+    ("bc_group_blacklist", "user_id"), ("auto_block_channels", "user_id"),
+    ("vip_tokens", "holder_id"),
+]
 
 
-def _orphan_where(table: str) -> str:
-    # Yatim = pemiliknya tidak ada di users DAN tidak punya langganan/session.
-    return ("user_id NOT IN (SELECT user_id FROM users) "
-            "AND user_id NOT IN (SELECT user_id FROM subscriptions) "
-            "AND user_id NOT IN (SELECT user_id FROM sessions)")
-
-
-def cleanup_preview() -> dict:
-    """Jumlah baris yang akan dihapus per kategori (tanpa menghapus apa pun)."""
-    out = {}
-    for key in CLEAN_KEYS:
-        if key == "orphans":
-            out[key] = sum(_scalar(f"SELECT COUNT(*) FROM {t} WHERE {_orphan_where(t)}") for t in _ORPHAN_TABLES)
-        else:
-            table, where, params = _clean_where(key)
-            out[key] = _scalar(f"SELECT COUNT(*) FROM {table} WHERE {where}", params)
-    return out
-
-
-def _clean_exec(cur, key: str) -> int:
-    if key == "orphans":
-        total = 0
-        for t in _ORPHAN_TABLES:
-            cur.execute(f"DELETE FROM {t} WHERE {_orphan_where(t)}")
-            total += cur.rowcount or 0
-        return total
-    table, where, params = _clean_where(key)
-    cur.execute(f"DELETE FROM {table} WHERE {where}", params)
-    return cur.rowcount or 0
-
-
-def cleanup_run_many(keys: list[str], dry_run: bool = False) -> dict:
+def cleanup_all(dry_run: bool = False) -> dict:
     """
-    Hapus beberapa kategori dalam SATU transaksi (semua berhasil atau tidak sama sekali).
-    Urutan tetap: langganan lama dulu agar user idle terdeteksi, data yatim terakhir.
+    Bersihkan semua data yang tidak diperlukan dalam SATU transaksi, tanpa batas waktu.
+
+    Yang DIPERTAHANKAN: admin, user dengan VIP/trial yang masih aktif, dan user yang masih
+    punya pesanan menunggu bayar/verifikasi. Selain itu (belum pernah beli, VIP expired atau
+    dicabut, pemakai trial, sisa data yatim) dihapus beserta session, langganan, pesanan,
+    pengaturan, QRIS, blacklist broadcast, auto block, dan token VIP-nya.
+    Pesanan gagal/batal/kedaluwarsa milik semua user ikut dihapus. Voucher dan promo yang sudah
+    habis atau kedaluwarsa dihapus; paket, pengaturan bot, dan blacklist channel tidak disentuh.
+
+    Dua pengecualian agar kuota tidak bisa diakali setelah pembersihan:
+    - pesanan lunas yang memakai kode promo berkuota yang masih aktif tetap disimpan
+      (jumlah pemakaian promo dihitung dari tabel pesanan);
+    - klaim voucher hanya dihapus bersama voucher-nya.
+
     dry_run=True: jalankan lalu ROLLBACK -> hanya untuk mengetahui jumlah pasti.
+    Return: {kunci: jumlah baris} untuk CLEAN_KEYS, ditambah "user_ids" (daftar user yang dihapus).
     """
-    order = [k for k in CLEAN_KEYS if k in keys]
+    from config import ADMIN_ID
+    now = datetime.now().isoformat()
     conn = get_conn()
     try:
         cur = conn.cursor()
-        result = {}
-        for k in ("subs_old", "orders_dead", "orders_paid", "users_idle", "orphans"):
-            if k in order:
-                result[k] = _clean_exec(cur, k)
+        # 1. Kumpulkan user yang boleh dihapus: semua id yang muncul di tabel mana pun,
+        #    dikurangi admin, VIP/trial aktif, dan pemilik pesanan yang masih terbuka.
+        universe = " UNION ".join(f"SELECT {col} AS uid FROM {t}" for t, col in _USER_TABLES)
+        universe += " UNION SELECT from_id FROM vip_token_log UNION SELECT to_id FROM vip_token_log"
+        cur.execute(
+            f"CREATE TEMP TABLE _clean_ids ON COMMIT DROP AS SELECT uid FROM ({universe}) u "
+            "WHERE uid <> %s "
+            "AND uid NOT IN (SELECT user_id FROM subscriptions WHERE is_active=1 AND expired_at > %s) "
+            "AND uid NOT IN (SELECT user_id FROM orders WHERE status IN ('pending','verifying'))",
+            (ADMIN_ID, now))
+        cur.execute("SELECT uid FROM _clean_ids")
+        user_ids = [r[0] for r in cur.fetchall()]
+
+        result = dict.fromkeys(CLEAN_KEYS, 0)
+
+        # 2. Pesanan: gagal/batal/kedaluwarsa milik siapa pun, dan semua riwayat milik user yang dihapus
+        #    (kecuali pesanan lunas yang masih menjadi hitungan kuota promo aktif).
+        keep_promo = ("promo_id IN (SELECT id FROM promo_codes WHERE is_active=1 AND max_uses>0 "
+                      "AND (expires_at IS NULL OR expires_at > %s))")
+        cur.execute(
+            "DELETE FROM orders WHERE status IN ('expired','cancelled','rejected') "
+            f"OR (user_id IN (SELECT uid FROM _clean_ids) AND status NOT IN ('pending','verifying') "
+            f"AND NOT COALESCE({keep_promo}, FALSE))", (now,))
+        result["orders"] = cur.rowcount or 0
+
+        # 3. Data milik user yang dihapus.
+        for key, table, col in (
+            ("sessions", "sessions", "user_id"),
+            ("subscriptions", "subscriptions", "user_id"),
+        ):
+            cur.execute(f"DELETE FROM {table} WHERE {col} IN (SELECT uid FROM _clean_ids)")
+            result[key] = cur.rowcount or 0
+        for table, col in (("user_settings", "user_id"), ("user_qris", "user_id"),
+                           ("bc_group_blacklist", "user_id"), ("auto_block_channels", "user_id"),
+                           ("vip_tokens", "holder_id")):
+            cur.execute(f"DELETE FROM {table} WHERE {col} IN (SELECT uid FROM _clean_ids)")
+            result["related"] += cur.rowcount or 0
+        cur.execute("DELETE FROM vip_token_log WHERE from_id IN (SELECT uid FROM _clean_ids) "
+                    "AND to_id IN (SELECT uid FROM _clean_ids)")
+        result["related"] += cur.rowcount or 0
+        cur.execute("DELETE FROM users WHERE user_id IN (SELECT uid FROM _clean_ids)")
+        result["users"] = cur.rowcount or 0
+
+        # 4. Voucher habis/kedaluwarsa (beserta klaimnya) dan promo kedaluwarsa.
+        cur.execute(
+            "DELETE FROM vouchers v WHERE (v.expires_at IS NOT NULL AND v.expires_at <= %s) "
+            "OR (v.max_claims > 0 AND (SELECT COUNT(*) FROM voucher_claims c WHERE c.voucher_id=v.id) >= v.max_claims)",
+            (now,))
+        result["codes"] += cur.rowcount or 0
+        cur.execute("DELETE FROM voucher_claims WHERE voucher_id NOT IN (SELECT id FROM vouchers)")
+        result["related"] += cur.rowcount or 0
+        cur.execute("DELETE FROM promo_codes WHERE expires_at IS NOT NULL AND expires_at <= %s", (now,))
+        result["codes"] += cur.rowcount or 0
+
         if dry_run:
             conn.rollback()
         else:
             conn.commit()
-        return {k: result[k] for k in order}
+        result["user_ids"] = user_ids
+        return result
     except Exception:
         conn.rollback()
         raise
     finally:
         conn.close()
-
-
-def cleanup_run(key: str) -> int:
-    """Hapus satu kategori. Return jumlah baris terhapus."""
-    return cleanup_run_many([key])[key]
 
 
 def vacuum_db() -> None:
@@ -868,3 +1106,359 @@ def vacuum_db() -> None:
         conn.cursor().execute("VACUUM ANALYZE")
     finally:
         conn.close()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Token VIP — pindahkan VIP ke akun lain (maks 3x), diterbitkan tiap pembelian
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _token(r) -> dict:
+    return {"token": r[0], "holder_id": r[1], "uses": r[2], "max_uses": r[3]}
+
+
+def get_token(user_id: int) -> dict | None:
+    """Token yang saat ini dipegang user (akun pemegang VIP)."""
+    r = _run("SELECT token, holder_id, uses, max_uses FROM vip_tokens WHERE holder_id=%s", (user_id,), "one")
+    return _token(r) if r else None
+
+
+def issue_token(user_id: int) -> dict:
+    """Terbitkan kode token acak BARU untuk user dan reset pemakaian ke 0 (token lama hangus)."""
+    now = _now_iso()
+    for _ in range(5):
+        try:
+            _run(
+                """
+                INSERT INTO vip_tokens (token, holder_id, uses, max_uses, created_at, updated_at)
+                VALUES (%s,%s,0,%s,%s,%s)
+                ON CONFLICT(holder_id) DO UPDATE SET token=EXCLUDED.token, uses=0,
+                    max_uses=EXCLUDED.max_uses, created_at=EXCLUDED.created_at, updated_at=EXCLUDED.updated_at
+                """,
+                (generate_token(), user_id, MAX_TOKEN_USES, now, now),
+            )
+            return get_token(user_id)
+        except psycopg2.errors.UniqueViolation:
+            continue                       # kode kebetulan kembar, buat ulang
+    raise RuntimeError("Gagal membuat token unik.")
+
+
+def ensure_token(user_id: int) -> dict | None:
+    """Token user; dibuat bila belum ada DAN user punya VIP berbayar aktif (mis. VIP lama / hasil gift)."""
+    tok = get_token(user_id)
+    if tok:
+        return tok
+    row = get_subscription_info(user_id)          # (paid_at, expired_at, is_active, plan)
+    if row and row[2] and row[3] == "vip" and datetime.now() < datetime.fromisoformat(row[1]):
+        return issue_token(user_id)
+    return None
+
+
+def transfer_vip_by_token(code: str, to_id: int) -> dict:
+    """
+    Pindahkan sisa VIP dari pemegang token ke akun to_id, dalam SATU transaksi.
+    Token ikut berpindah ke akun baru (kode sama, pemakaian +1) sehingga bisa dipindah lagi sampai batas.
+    Return {"ok": True, ...} atau {"ok": False, "error": invalid|same|limit|inactive|target_active}.
+    """
+    conn = get_conn()
+    try:
+        c = conn.cursor()
+        c.execute("SELECT token, holder_id, uses, max_uses FROM vip_tokens WHERE token=%s FOR UPDATE", (code,))
+        row = c.fetchone()
+        if not row:
+            return {"ok": False, "error": "invalid"}
+        token, holder, uses, max_uses = row
+        if holder == to_id:
+            return {"ok": False, "error": "same"}
+        if uses >= max_uses:
+            return {"ok": False, "error": "limit"}
+        now = datetime.now()
+
+        c.execute("SELECT paid_at, expired_at, is_active, plan FROM subscriptions WHERE user_id=%s FOR UPDATE", (holder,))
+        src = c.fetchone()
+        try:
+            src_exp = datetime.fromisoformat(src[1]) if src else None
+        except Exception:
+            src_exp = None
+        if not src or not src[2] or src[3] != "vip" or not src_exp or src_exp <= now:
+            return {"ok": False, "error": "inactive"}
+
+        c.execute("SELECT expired_at, is_active, plan FROM subscriptions WHERE user_id=%s FOR UPDATE", (to_id,))
+        tgt = c.fetchone()
+        if tgt and tgt[1] and tgt[2] == "vip":
+            try:
+                if datetime.fromisoformat(tgt[0]) > now:
+                    return {"ok": False, "error": "target_active"}
+            except Exception:
+                pass
+
+        # Akun lama dinonaktifkan, akun baru menerima sisa masa VIP yang persis sama.
+        c.execute("UPDATE subscriptions SET is_active=0, expired_at=%s WHERE user_id=%s", (now.isoformat(), holder))
+        c.execute(
+            """
+            INSERT INTO subscriptions (user_id, plan, paid_at, expired_at, is_active, reminder_stage)
+            VALUES (%s,'vip',%s,%s,1,0)
+            ON CONFLICT(user_id) DO UPDATE SET paid_at=EXCLUDED.paid_at, expired_at=EXCLUDED.expired_at,
+                is_active=1, plan='vip', reminder_stage=0
+            """,
+            (to_id, src[0], src_exp.isoformat()),
+        )
+        c.execute("DELETE FROM vip_tokens WHERE holder_id=%s AND token<>%s", (to_id, token))   # token lama akun baru
+        c.execute("UPDATE vip_tokens SET holder_id=%s, uses=uses+1, updated_at=%s WHERE token=%s",
+                  (to_id, now.isoformat(), token))
+        c.execute("INSERT INTO vip_token_log (token, from_id, to_id, created_at) VALUES (%s,%s,%s,%s)",
+                  (token, holder, to_id, now.isoformat()))
+        conn.commit()
+        return {"ok": True, "token": token, "from_id": holder, "to_id": to_id, "expired": src_exp,
+                "uses": uses + 1, "max_uses": max_uses}
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def get_token_log(user_id: int, limit: int = 3) -> list[dict]:
+    rows = _run(
+        "SELECT from_id, to_id, created_at FROM vip_token_log WHERE from_id=%s OR to_id=%s ORDER BY id DESC LIMIT %s",
+        (user_id, user_id, limit), "all",
+    )
+    return [{"from_id": r[0], "to_id": r[1], "created_at": r[2]} for r in rows]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Kode promo (diskon 1-100%)
+# ══════════════════════════════════════════════════════════════════════════════
+
+_PROMO_COLS = "id, code, percent, max_uses, expires_at, is_active"
+# Pesanan yang memakan kuota. Batal/kedaluwarsa/ditolak otomatis membebaskan kuota.
+_PROMO_COUNTED = "('pending','verifying','paid','revoked')"
+
+
+def _promo(r) -> dict:
+    d = {"id": r[0], "code": r[1], "percent": r[2], "max_uses": r[3], "expires_at": r[4], "is_active": bool(r[5])}
+    if len(r) > 6:
+        d["used"] = r[6]
+    return d
+
+
+def _promo_counts(c, promo_id: int, user_id: int) -> tuple[int, int]:
+    c.execute(
+        f"SELECT COUNT(*), COUNT(*) FILTER (WHERE user_id=%s) FROM orders "
+        f"WHERE promo_id=%s AND status IN {_PROMO_COUNTED}", (user_id, promo_id))
+    r = c.fetchone()
+    return r[0], r[1]
+
+
+_PROMO_WITH_USED = (f"SELECT {_PROMO_COLS}, (SELECT COUNT(*) FROM orders o WHERE o.promo_id=promo_codes.id "
+                    f"AND o.status IN {_PROMO_COUNTED}) FROM promo_codes")
+
+
+def add_promo(code: str, percent: int, max_uses: int = 0, expires_at: str | None = None) -> int | None:
+    """Return id promo, atau None bila kode sudah ada. max_uses=0 berarti tanpa batas."""
+    try:
+        return _run(
+            "INSERT INTO promo_codes (code, percent, max_uses, expires_at, is_active, created_at) "
+            "VALUES (%s,%s,%s,%s,1,%s) RETURNING id",
+            (code, percent, max_uses, expires_at, _now_iso()), "one")[0]
+    except psycopg2.errors.UniqueViolation:
+        return None
+
+
+def get_promo(promo_id: int) -> dict | None:
+    r = _run(_PROMO_WITH_USED + " WHERE id=%s", (promo_id,), "one")
+    return _promo(r) if r else None
+
+
+def get_promo_by_code(code: str) -> dict | None:
+    r = _run(f"SELECT {_PROMO_COLS} FROM promo_codes WHERE code=%s", (code,), "one")
+    return _promo(r) if r else None
+
+
+def get_promos(limit: int = 8, offset: int = 0) -> list[dict]:
+    return [_promo(r) for r in _run(_PROMO_WITH_USED + " ORDER BY id DESC LIMIT %s OFFSET %s", (limit, offset), "all")]
+
+
+def count_promos() -> int:
+    return _scalar("SELECT COUNT(*) FROM promo_codes")
+
+
+def set_promo_active(promo_id: int, active: bool) -> None:
+    _run("UPDATE promo_codes SET is_active=%s WHERE id=%s", (1 if active else 0, promo_id))
+
+
+def delete_promo(promo_id: int) -> bool:
+    return (_run("DELETE FROM promo_codes WHERE id=%s", (promo_id,), "rowcount") or 0) > 0
+
+
+def check_promo(code: str, user_id: int) -> dict:
+    """Validasi kode promo untuk user. Return promo (dict) atau raise CodeError."""
+    p = get_promo_by_code(code)
+    used = user_used = 0
+    if p:
+        row = _run(
+            f"SELECT COUNT(*), COUNT(*) FILTER (WHERE user_id=%s) FROM orders "
+            f"WHERE promo_id=%s AND status IN {_PROMO_COUNTED}", (user_id, p["id"]), "one")
+        used, user_used = row[0], row[1]
+    problem = promo_problem(p, used, user_used, datetime.now())
+    if problem:
+        raise problem
+    return p
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Voucher klaim VIP
+# ══════════════════════════════════════════════════════════════════════════════
+
+_VCH_COLS = "id, code, days, max_claims, expires_at, is_active"
+_VCH_WITH_CLAIMED = (f"SELECT {_VCH_COLS}, (SELECT COUNT(*) FROM voucher_claims vc WHERE vc.voucher_id=vouchers.id) "
+                     "FROM vouchers")
+
+
+def _voucher(r) -> dict:
+    d = {"id": r[0], "code": r[1], "days": r[2], "max_claims": r[3], "expires_at": r[4], "is_active": bool(r[5])}
+    if len(r) > 6:
+        d["claimed"] = r[6]
+    return d
+
+
+def add_voucher(code: str, days: int, max_claims: int = 1, expires_at: str | None = None) -> int | None:
+    """Return id voucher, atau None bila kode sudah ada. max_claims=0 berarti tanpa batas."""
+    try:
+        return _run(
+            "INSERT INTO vouchers (code, days, max_claims, expires_at, is_active, created_at) "
+            "VALUES (%s,%s,%s,%s,1,%s) RETURNING id",
+            (code, days, max_claims, expires_at, _now_iso()), "one")[0]
+    except psycopg2.errors.UniqueViolation:
+        return None
+
+
+def add_vouchers_bulk(days: int, count: int, expires_at: str | None = None) -> list[str]:
+    """Buat `count` voucher sekali-pakai dengan kode acak, dalam satu transaksi."""
+    codes: list[str] = []
+    conn = get_conn()
+    try:
+        c = conn.cursor()
+        now = _now_iso()
+        while len(codes) < count:
+            code = generate_code(10)
+            c.execute(
+                "INSERT INTO vouchers (code, days, max_claims, expires_at, is_active, created_at) "
+                "VALUES (%s,%s,1,%s,1,%s) ON CONFLICT(code) DO NOTHING RETURNING id",
+                (code, days, expires_at, now))
+            if c.fetchone():
+                codes.append(code)
+        conn.commit()
+        return codes
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def get_voucher(voucher_id: int) -> dict | None:
+    r = _run(_VCH_WITH_CLAIMED + " WHERE id=%s", (voucher_id,), "one")
+    return _voucher(r) if r else None
+
+
+def get_vouchers(limit: int = 8, offset: int = 0) -> list[dict]:
+    return [_voucher(r) for r in _run(_VCH_WITH_CLAIMED + " ORDER BY id DESC LIMIT %s OFFSET %s", (limit, offset), "all")]
+
+
+def count_vouchers() -> int:
+    return _scalar("SELECT COUNT(*) FROM vouchers")
+
+
+def get_voucher_claims(voucher_id: int, limit: int = 5) -> list[dict]:
+    rows = _run(
+        "SELECT vc.user_id, u.username, u.full_name, vc.claimed_at FROM voucher_claims vc "
+        "LEFT JOIN users u ON u.user_id = vc.user_id WHERE vc.voucher_id=%s ORDER BY vc.id DESC LIMIT %s",
+        (voucher_id, limit), "all")
+    return [{"user_id": r[0], "username": r[1], "full_name": r[2], "claimed_at": r[3]} for r in rows]
+
+
+def set_voucher_active(voucher_id: int, active: bool) -> None:
+    _run("UPDATE vouchers SET is_active=%s WHERE id=%s", (1 if active else 0, voucher_id))
+
+
+def delete_voucher(voucher_id: int) -> bool:
+    conn = get_conn()
+    try:
+        c = conn.cursor()
+        c.execute("DELETE FROM voucher_claims WHERE voucher_id=%s", (voucher_id,))
+        c.execute("DELETE FROM vouchers WHERE id=%s", (voucher_id,))
+        deleted = c.rowcount
+        conn.commit()
+        return deleted > 0
+    finally:
+        conn.close()
+
+
+def claim_voucher(code: str, user_id: int) -> dict:
+    """
+    Klaim voucher: cek, catat klaim, dan tambah masa VIP dalam SATU transaksi
+    (baris voucher dikunci, jadi kuota tidak bisa terlampaui). Raise CodeError bila ditolak.
+    Setelah berhasil, user mendapat token baru. Return {"code", "days", "expired", "token"}.
+    """
+    conn = get_conn()
+    try:
+        c = conn.cursor()
+        c.execute(f"SELECT {_VCH_COLS} FROM vouchers WHERE code=%s FOR UPDATE", (code,))
+        r = c.fetchone()
+        if not r or not r[5]:
+            raise CodeError("Kode voucher tidak ditemukan atau sudah tidak aktif.", not_found=True)
+        vid, vcode, days, max_claims, expires_at, _active = r
+        if expires_at and datetime.fromisoformat(expires_at) <= datetime.now():
+            raise CodeError("Kode voucher sudah kedaluwarsa.")
+        c.execute("SELECT COUNT(*), COUNT(*) FILTER (WHERE user_id=%s) FROM voucher_claims WHERE voucher_id=%s",
+                  (user_id, vid))
+        total, mine = c.fetchone()
+        if mine:
+            raise CodeError("Kamu sudah pernah mengklaim voucher ini.")
+        if max_claims and total >= max_claims:
+            raise CodeError("Voucher ini sudah habis diklaim.")
+        c.execute("INSERT INTO voucher_claims (voucher_id, user_id, claimed_at) VALUES (%s,%s,%s)",
+                  (vid, user_id, _now_iso()))
+        expired = _extend_sub_cur(c, user_id, days)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return {"code": vcode, "days": days, "expired": expired, "token": issue_token(user_id)}
+
+
+# ── Rich Post: daftar channel/grup tujuan ─────────────────────────────────────
+MAX_RICH_TARGETS = 20
+
+
+def get_rich_targets(user_id: int) -> list[dict]:
+    conn = get_conn(); cur = conn.cursor()
+    cur.execute("SELECT chat_id, title, chat_type FROM rich_targets WHERE user_id=%s ORDER BY id", (user_id,))
+    rows = cur.fetchall(); conn.close()
+    return [{"chat_id": r[0], "title": r[1] or str(r[0]), "chat_type": r[2] or ""} for r in rows]
+
+
+def add_rich_target(user_id: int, chat_id: int, title: str, chat_type: str) -> bool:
+    """False bila daftar sudah penuh (tujuan baru). Tujuan yang sudah ada hanya diperbarui namanya."""
+    conn = get_conn(); cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM rich_targets WHERE user_id=%s AND chat_id<>%s", (user_id, chat_id))
+    if cur.fetchone()[0] >= MAX_RICH_TARGETS:
+        conn.close(); return False
+    cur.execute(
+        """
+        INSERT INTO rich_targets (user_id, chat_id, title, chat_type, added_at)
+        VALUES (%s, %s, %s, %s, %s)
+        ON CONFLICT (user_id, chat_id) DO UPDATE SET title=EXCLUDED.title, chat_type=EXCLUDED.chat_type
+        """,
+        (user_id, chat_id, title, chat_type, _now_iso()),
+    )
+    conn.commit(); conn.close()
+    return True
+
+
+def delete_rich_target(user_id: int, chat_id: int) -> None:
+    conn = get_conn(); cur = conn.cursor()
+    cur.execute("DELETE FROM rich_targets WHERE user_id=%s AND chat_id=%s", (user_id, chat_id))
+    conn.commit(); conn.close()

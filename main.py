@@ -24,6 +24,8 @@ from user.callbacks import user_callback_handler
 from user.inputs import user_input_handler
 from user.payment import payment_callback_handler
 from user.qris import qris_callback_handler
+from user.rich_post import rich_callback_handler
+from user.vip_codes import codes_callback_handler
 from scheduler import scheduler_loop
 from services.session_runner import ensure_client_running
 from user.start import cmd_cancel, cmd_start
@@ -96,6 +98,8 @@ def main():
     app.add_handler(CallbackQueryHandler(admin_callback_handler, pattern=r"^(menu_admin|admin_|bl_)"))
     app.add_handler(CallbackQueryHandler(payment_callback_handler, pattern=r"^pay_"))
     app.add_handler(CallbackQueryHandler(qris_callback_handler, pattern=r"^(fitur_qris|qris_)"))
+    app.add_handler(CallbackQueryHandler(codes_callback_handler, pattern=r"^(tok_|vch_)"))
+    app.add_handler(CallbackQueryHandler(rich_callback_handler, pattern=r"^(fitur_rich|rp_)"))
     app.add_handler(CallbackQueryHandler(user_callback_handler))
     app.add_handler(MessageHandler(filters.ALL, admin_message_handler), group=2)
     # Input user saat mode menunggu (upload QRIS statis / bukti bayar)

@@ -7,7 +7,7 @@ from telegram.constants import ParseMode
 
 from admin import autobackup
 from client_manager import active_clients, stop_client_for_user
-from database import expire_stale_orders, get_setting, get_subs_for_reminder, set_reminder_stage
+from database import expire_stale_orders, get_setting, get_subs_for_reminder, get_sync_user_ids, set_reminder_stage
 from ui import esc, fmt_dt
 
 TICK_SECONDS = 60
@@ -78,6 +78,31 @@ async def _subscription_reminders(bot):
             set_reminder_stage(uid, new_stage)
 
 
+_sync_backoff: dict[int, float] = {}      # user_id -> waktu (monotonic) boleh dicoba lagi
+
+
+async def _sync_sessions(bot):
+    """
+    Selaraskan client Telethon dengan database. Diperlukan karena VIP bisa aktif/berpindah lewat Mini App
+    (proses terpisah): user yang baru aktif dinyalakan, user yang VIP-nya dicabut/dipindah dimatikan.
+    """
+    import time
+    from services.session_runner import ensure_client_running
+
+    now = time.monotonic()
+    live, dead = get_sync_user_ids()
+    for uid in live:
+        client = active_clients.get(uid)
+        if (client and client.is_connected()) or _sync_backoff.get(uid, 0) > now:
+            continue
+        res = await ensure_client_running(uid, bot)
+        if res.startswith("failed"):
+            _sync_backoff[uid] = now + 1800           # session bermasalah: coba lagi 30 menit kemudian
+    for uid in dead:
+        if uid in active_clients:
+            await stop_client_for_user(uid)
+
+
 async def scheduler_loop(bot):
     await asyncio.sleep(20)          # beri waktu bot & session selesai start
     tick = 0
@@ -88,6 +113,10 @@ async def scheduler_loop(bot):
                 print(f"[scheduler] auto backup: {'OK' if ok else 'GAGAL'} — {info}")
         except Exception as e:
             print(f"[scheduler] auto backup error: {e}")
+        try:
+            await _sync_sessions(bot)
+        except Exception as e:
+            print(f"[scheduler] sync session error: {e}")
         try:
             await _expire_orders(bot)
         except Exception as e:
