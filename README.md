@@ -21,10 +21,12 @@ Perintah titik diketik dari **akun Telegram kamu sendiri** di chat mana saja (bu
 | Auto Block Leaver | Menu bot | Blokir otomatis anggota yang keluar dari channel pilihan |
 | QRIS dinamis | `.qris (nominal)` | Ubah QRIS statis jadi dinamis. Contoh: `.qris 25000`, `.qris 25k`, `.qris 1,5jt` |
 | Ping | `.ping` (di Saved Messages) | Cek session aktif dan lama responsnya |
-| **Rich Post** | Menu bot | Posting ke channel/grup dengan format Rich Messages ([panduan](docs/RICH_POST.md)) |
+| **Hapus Pesan** | Menu bot | Hapus pesanmu di 1 chat, semua grup/channel/pribadi, atau komentar channel, dengan pengecualian dan rentang waktu |
+| **GBAN** | `.gban` `.ungban` `.gbanlist` | Blokir satu akun dari semua grup/channel tempat kamu admin, plus auto-ban saat join |
+| **Rich Post** | Menu bot | Posting ke channel/grup dengan format Rich Messages: tombol Link/Salin/Bagikan/Chat/Popup/Vote, tombol sebaris, blok (tabel, daftar, musik, berkas, galeri spoiler), urutan bisa digeser ([panduan](docs/RICH_POST.md)) |
 | Pengingat VIP | Otomatis | Notifikasi H-3 dan H-1 sebelum VIP habis |
 
-> Perintah titik dan Auto Block Leaver butuh **session aktif**. **Rich Post** berjalan sepenuhnya lewat bot, tanpa session.
+> Perintah titik dan Auto Block Leaver butuh **session aktif**. **Rich Post** berjalan sepenuhnya lewat bot, tanpa session. **Hapus Pesan** dan **GBAN** butuh session aktif.
 
 **Setup QRIS dinamis:** Bot → 🎯 Fitur VIP → 💳 QRIS Dinamis → kirim gambar QRIS statis (atau tempel kodenya). Hasil `.qris` dikirim di chat tempat perintah diketik.
 
@@ -56,7 +58,7 @@ Perintah titik diketik dari **akun Telegram kamu sendiri** di chat mana saja (bu
 
 ## Konfigurasi
 
-Set di Railway (atau `.env` untuk lokal).
+Set di Railway → tab **Variables** (atau `.env` untuk lokal). Daftar lengkap ada di [`.env.example`](.env.example); panduan langkah demi langkah di [PANDUAN_RAILWAY.md](PANDUAN_RAILWAY.md).
 
 | Variable | Wajib | Keterangan |
 |---|:---:|---|

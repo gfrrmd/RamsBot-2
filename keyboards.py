@@ -68,15 +68,33 @@ def trial_activated_keyboard():
     ])
 
 
-def fitur_vip_keyboard():
-    return InlineKeyboardMarkup([
-        [Btn("⏱️ Media Timer", callback_data="fitur_timer"), Btn("📣 Channel/Grup", callback_data="fitur_copy")],
-        [Btn("🎥 Story", callback_data="fitur_story"), Btn("📢 Broadcast", callback_data="fitur_broadcast")],
-        [Btn("💳 QRIS Dinamis", callback_data="fitur_qris"), Btn("✅ Auto Approve", callback_data="fitur_acceptall")],
-        [Btn("🔒 Auto Block Leaver", callback_data="fitur_autoblock"), Btn("🏓 Ping", callback_data="fitur_ping")],
-        [Btn("📰 Rich Post", callback_data="fitur_rich")],
-        [Btn("🏠 Menu Utama", callback_data="menu_back")],
-    ])
+FITUR_VIP = [
+    ("⏱️ Media Timer", "fitur_timer"), ("📣 Channel/Grup", "fitur_copy"),
+    ("🎥 Story", "fitur_story"), ("📢 Broadcast", "fitur_broadcast"),
+    ("💳 QRIS Dinamis", "fitur_qris"), ("✅ Auto Approve", "fitur_acceptall"),
+    ("🔒 Auto Block Leaver", "fitur_autoblock"), ("🏓 Ping", "fitur_ping"),
+    ("🗑️ Hapus Pesan", "fitur_delmsg"), ("🚫 GBAN", "fitur_gban"),
+    ("📰 Rich Post", "fitur_rich"),
+]
+FITUR_PER_PAGE = 6
+
+
+def fitur_vip_pages() -> int:
+    return max(1, -(-len(FITUR_VIP) // FITUR_PER_PAGE))
+
+
+def fitur_vip_keyboard(page: int = 0):
+    """Menu Fitur VIP: 6 tombol per slide, ⬅️➡️ berputar (dari awal ke akhir dan sebaliknya)."""
+    pages = fitur_vip_pages()
+    page %= pages
+    items = FITUR_VIP[page * FITUR_PER_PAGE:(page + 1) * FITUR_PER_PAGE]
+    rows = [[Btn(t, callback_data=cb) for t, cb in items[i:i + 2]] for i in range(0, len(items), 2)]
+    if pages > 1:
+        rows.append([Btn("⬅️", callback_data=f"menu_fitur_p:{(page - 1) % pages}"),
+                     Btn(f"{page + 1}/{pages}", callback_data=f"menu_fitur_p:{page}"),
+                     Btn("➡️", callback_data=f"menu_fitur_p:{(page + 1) % pages}")])
+    rows.append([Btn("🏠 Menu Utama", callback_data="menu_back")])
+    return InlineKeyboardMarkup(rows)
 
 
 def broadcast_keyboard():

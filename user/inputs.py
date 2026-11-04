@@ -2,7 +2,8 @@
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from auth.states import rich_wait, waiting_code, waiting_payment_proof, waiting_qris_upload
+from auth.states import delmsg_wait, rich_wait, waiting_code, waiting_payment_proof, waiting_qris_upload
+from user.delmsg import handle_delmsg_input
 from user.payment import handle_proof_input
 from user.qris import handle_qris_input
 from user.rich_post import handle_rich_input
@@ -18,6 +19,8 @@ async def user_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
     if uid in rich_wait:
         await handle_rich_input(update, context)
+    elif uid in delmsg_wait:
+        await handle_delmsg_input(update, context)
     elif uid in waiting_code:
         await handle_code_input(update, context)
     elif uid in waiting_qris_upload:

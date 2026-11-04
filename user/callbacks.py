@@ -20,6 +20,7 @@ from keyboards import (
     beli_keyboard,
     broadcast_keyboard,
     fitur_vip_keyboard,
+    fitur_vip_pages,
     main_keyboard,
     timer_keyboard,
     tos_keyboard,
@@ -107,8 +108,11 @@ async def user_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
         user = query.from_user
         await edit_or_send(query, build_subscription_text(uid, full_name=user.full_name, username=user.username), account_keyboard())
         return
-    if data == "menu_fitur":
-        await edit_or_send(query, f"{header('🎯', 'Fitur VIP')}\nPilih fitur di bawah:", fitur_vip_keyboard())
+    if data == "menu_fitur" or data.startswith("menu_fitur_p:"):
+        page = int(data.split(":", 1)[1]) if ":" in data else 0
+        pages = fitur_vip_pages()
+        await edit_or_send(query, f"{header('🎯', 'Fitur VIP')}\nPilih fitur di bawah. Halaman {page % pages + 1}/{pages}:",
+                           fitur_vip_keyboard(page))
         return
     if data == "menu_beli":
         await edit_or_send(

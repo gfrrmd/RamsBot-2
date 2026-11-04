@@ -16,6 +16,8 @@ applied_promo: dict[int, str] = {}
 # Rich Post: langkah input yang ditunggu (content | title | footer | buttons | target) dan draf postingan.
 rich_wait: dict[int, str] = {}
 rich_draft: dict[int, dict] = {}
+# Hapus Pesan: langkah input teks yang ditunggu (target | addch | confirm_text).
+delmsg_wait: dict[int, str] = {}
 # Admin: 1 state aktif sekaligus. {"action": str, ...konteks}
 admin_state: dict[int, dict] = {}
 
@@ -26,6 +28,7 @@ def clear_input_waits(uid: int):
     waiting_payment_proof.pop(uid, None)
     waiting_code.pop(uid, None)
     rich_wait.pop(uid, None)
+    delmsg_wait.pop(uid, None)
 
 
 def clear_user_state(uid: int):

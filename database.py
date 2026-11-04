@@ -193,6 +193,50 @@ def init_db():
             UNIQUE (voucher_id, user_id)
         )
     """)
+    # v5: fitur VIP Hapus Pesan dan GBAN
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS gban_list (
+            id SERIAL PRIMARY KEY,
+            user_id BIGINT NOT NULL,
+            target_id BIGINT NOT NULL,
+            name TEXT,
+            username TEXT,
+            reason TEXT,
+            created_at TEXT,
+            UNIQUE (user_id, target_id)
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS userbot_settings (
+            user_id BIGINT PRIMARY KEY,
+            data TEXT NOT NULL
+        )
+    """)
+    # v6: tombol Rich Post (popup dan vote)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS rich_popups (
+            id SERIAL PRIMARY KEY,
+            owner_id BIGINT NOT NULL,
+            text TEXT NOT NULL,
+            UNIQUE (owner_id, text)
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS rich_polls (
+            id SERIAL PRIMARY KEY,
+            owner_id BIGINT NOT NULL,
+            kb TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS rich_votes (
+            poll_id INTEGER NOT NULL,
+            user_id BIGINT NOT NULL,
+            idx INTEGER NOT NULL,
+            PRIMARY KEY (poll_id, user_id)
+        )
+    """)
     conn.commit()
     conn.close()
 
@@ -1004,6 +1048,8 @@ _USER_TABLES = [
     ("orders", "user_id"), ("user_settings", "user_id"), ("user_qris", "user_id"),
     ("bc_group_blacklist", "user_id"), ("auto_block_channels", "user_id"),
     ("vip_tokens", "holder_id"),
+    ("gban_list", "user_id"), ("userbot_settings", "user_id"),
+    ("rich_popups", "owner_id"), ("rich_polls", "owner_id"),
 ]
 
 
@@ -1065,7 +1111,9 @@ def cleanup_all(dry_run: bool = False) -> dict:
             result[key] = cur.rowcount or 0
         for table, col in (("user_settings", "user_id"), ("user_qris", "user_id"),
                            ("bc_group_blacklist", "user_id"), ("auto_block_channels", "user_id"),
-                           ("vip_tokens", "holder_id")):
+                           ("vip_tokens", "holder_id"), ("gban_list", "user_id"),
+                           ("userbot_settings", "user_id"), ("rich_popups", "owner_id"),
+                           ("rich_polls", "owner_id")):
             cur.execute(f"DELETE FROM {table} WHERE {col} IN (SELECT uid FROM _clean_ids)")
             result["related"] += cur.rowcount or 0
         cur.execute("DELETE FROM vip_token_log WHERE from_id IN (SELECT uid FROM _clean_ids) "
@@ -1462,3 +1510,121 @@ def delete_rich_target(user_id: int, chat_id: int) -> None:
     conn = get_conn(); cur = conn.cursor()
     cur.execute("DELETE FROM rich_targets WHERE user_id=%s AND chat_id=%s", (user_id, chat_id))
     conn.commit(); conn.close()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Fitur VIP: Hapus Pesan & GBAN (pengaturan dan daftar per user)
+# ══════════════════════════════════════════════════════════════════════════════
+import json as _json
+
+USERBOT_DEFAULTS = {"speed": "normal", "auto_ban": True, "purge_on_gban": False, "exclude": {}, "extra": []}
+
+
+def get_userbot_settings(user_id: int) -> dict:
+    """Pengaturan Hapus Pesan/GBAN milik user (kecepatan, auto-ban, pengecualian, channel tambahan)."""
+    cfg = {k: (v.copy() if isinstance(v, (dict, list)) else v) for k, v in USERBOT_DEFAULTS.items()}
+    row = _run("SELECT data FROM userbot_settings WHERE user_id=%s", (user_id,), "one")
+    if row and row[0]:
+        try:
+            saved = _json.loads(row[0])
+            if isinstance(saved, dict):
+                cfg.update({k: v for k, v in saved.items() if k in cfg})
+        except ValueError:
+            pass
+    return cfg
+
+
+def save_userbot_settings(user_id: int, cfg: dict) -> None:
+    data = _json.dumps({k: cfg[k] for k in USERBOT_DEFAULTS if k in cfg}, ensure_ascii=False)
+    _run(
+        "INSERT INTO userbot_settings (user_id, data) VALUES (%s,%s) "
+        "ON CONFLICT(user_id) DO UPDATE SET data=EXCLUDED.data",
+        (user_id, data),
+    )
+
+
+def gban_add(user_id: int, target_id: int, name: str = "", username: str | None = None, reason: str = "") -> None:
+    _run(
+        """
+        INSERT INTO gban_list (user_id, target_id, name, username, reason, created_at)
+        VALUES (%s,%s,%s,%s,%s,%s)
+        ON CONFLICT(user_id, target_id) DO UPDATE SET name=EXCLUDED.name, username=EXCLUDED.username,
+            reason=EXCLUDED.reason, created_at=EXCLUDED.created_at
+        """,
+        (user_id, target_id, name or "", username or "", reason or "", _now_iso()),
+    )
+
+
+def gban_remove(user_id: int, target_id: int) -> bool:
+    return (_run("DELETE FROM gban_list WHERE user_id=%s AND target_id=%s", (user_id, target_id), "rowcount") or 0) > 0
+
+
+def gban_has(user_id: int, target_id: int) -> bool:
+    return _run("SELECT 1 FROM gban_list WHERE user_id=%s AND target_id=%s", (user_id, target_id), "one") is not None
+
+
+def gban_count(user_id: int) -> int:
+    return _scalar("SELECT COUNT(*) FROM gban_list WHERE user_id=%s", (user_id,))
+
+
+def gban_list(user_id: int, limit: int = 30) -> list[dict]:
+    """Daftar GBAN terbaru lebih dulu."""
+    rows = _run(
+        "SELECT target_id, name, username, reason, created_at FROM gban_list WHERE user_id=%s "
+        "ORDER BY id DESC LIMIT %s", (user_id, limit), "all",
+    )
+    return [{"target_id": r[0], "name": r[1] or "", "username": r[2] or "", "reason": r[3] or "",
+             "created_at": r[4]} for r in rows]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Rich Post: tombol popup dan vote
+# ══════════════════════════════════════════════════════════════════════════════
+
+def rich_popup_id(owner_id: int, text: str) -> int:
+    """ID popup untuk teks ini (dibuat bila belum ada). Dipakai sebagai callback_data `rpp:<id>`."""
+    _run("INSERT INTO rich_popups (owner_id, text) VALUES (%s,%s) ON CONFLICT(owner_id, text) DO NOTHING",
+         (owner_id, text))
+    return _run("SELECT id FROM rich_popups WHERE owner_id=%s AND text=%s", (owner_id, text), "one")[0]
+
+
+def rich_popup_text(popup_id: int) -> str | None:
+    row = _run("SELECT text FROM rich_popups WHERE id=%s", (popup_id,), "one")
+    return row[0] if row else None
+
+
+def rich_poll_new(owner_id: int) -> int:
+    return _run("INSERT INTO rich_polls (owner_id, kb, created_at) VALUES (%s,%s,%s) RETURNING id",
+                (owner_id, "{}", _now_iso()), "one")[0]
+
+
+def rich_poll_set_kb(poll_id: int, kb_json: str) -> None:
+    _run("UPDATE rich_polls SET kb=%s WHERE id=%s", (kb_json, poll_id))
+
+
+def rich_poll_kb(poll_id: int) -> str | None:
+    row = _run("SELECT kb FROM rich_polls WHERE id=%s", (poll_id,), "one")
+    return row[0] if row else None
+
+
+def rich_vote_toggle(poll_id: int, user_id: int, idx: int) -> tuple[str, dict]:
+    """Satu orang satu suara. Menekan pilihan yang sama = batal, pilihan lain = pindah.
+    Return (aksi, {idx: jumlah}) dengan aksi 'added' | 'removed' | 'moved'."""
+    conn = get_conn()
+    try:
+        c = conn.cursor()
+        c.execute("SELECT idx FROM rich_votes WHERE poll_id=%s AND user_id=%s", (poll_id, user_id))
+        row = c.fetchone()
+        if row and row[0] == idx:
+            c.execute("DELETE FROM rich_votes WHERE poll_id=%s AND user_id=%s", (poll_id, user_id))
+            action = "removed"
+        else:
+            c.execute("INSERT INTO rich_votes (poll_id, user_id, idx) VALUES (%s,%s,%s) "
+                      "ON CONFLICT(poll_id, user_id) DO UPDATE SET idx=EXCLUDED.idx", (poll_id, user_id, idx))
+            action = "moved" if row else "added"
+        c.execute("SELECT idx, COUNT(*) FROM rich_votes WHERE poll_id=%s GROUP BY idx", (poll_id,))
+        counts = {r[0]: r[1] for r in c.fetchall()}
+        conn.commit()
+        return action, counts
+    finally:
+        conn.close()

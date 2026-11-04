@@ -20,6 +20,7 @@ from user.qris import register_qris_handler
 from user.broadcast import register_broadcast_handler
 from user.join_request import register_join_request_handler
 from user.auto_block_leaver import register_auto_block_leaver_handler
+from user.gban import register_gban_handler
 from user.outgoing_timer_log import register_outgoing_timer_log_handler
 from admin.cekvip import register as register_cekvip_handler
 
@@ -51,6 +52,7 @@ def register_telethon_handlers(client, user_id: int, bot_client=None):
     register_auto_block_leaver_handler(client, user_id)
     register_outgoing_timer_log_handler(client, user_id, bot_client=resolved_bot)
     register_qris_handler(client, user_id)
+    register_gban_handler(client, user_id)
     register_cekvip_handler(client)
 
 

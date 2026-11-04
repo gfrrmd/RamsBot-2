@@ -159,20 +159,20 @@ assert build_plain_html("a\n{tombol}\nb") == "a\nb"
 
 # ── parse_buttons
 ok, err = parse_buttons("Gabung | https://t.me/abc\nWeb|http://x.co\nApp | tg://resolve?domain=abc")
-assert len(ok) == 3 and not err and ok[0] == ("Gabung", "https://t.me/abc", "")
+assert len(ok) == 3 and not err and (ok[0]["label"], ok[0]["value"], ok[0]["style"], ok[0]["type"]) == ("Gabung", "https://t.me/abc", "", "link")
 ok, err = parse_buttons("tanpa pemisah")
 assert not ok and len(err) == 1
 # warna tombol
 ok, err = parse_buttons("A | https://x.co | hijau\nB | https://x.co | MERAH\nC | https://x.co | biru\nD | https://x.co | polos\nE | https://x.co | danger")
-assert [b[2] for b in ok] == ["success", "danger", "primary", "", "danger"] and not err
-ok, err = parse_buttons("A | https://x.co | ungu"); assert not ok and "warna" in err[0]
+assert [b["style"] for b in ok] == ["success", "danger", "primary", "", "danger"] and not err
+ok, err = parse_buttons("A | https://x.co | ungu"); assert not ok and err
 ok, err = parse_buttons("A | https://x.co | biru | lagi"); assert not ok and err
 ok, err = parse_buttons("A | ftp://x")
 assert not ok and "link" in err[0]
 ok, err = parse_buttons(" | https://x.co")
 assert not ok and err
-ok, err = parse_buttons("\n".join(f"b{i} | https://x.co/{i}" for i in range(12)))
-assert len(ok) == 8 and any("Maksimal" in e for e in err)
+ok, err = parse_buttons("\n".join(f"b{i} | https://x.co/{i}" for i in range(14)))
+assert len(ok) == 12 and any("Maksimal" in e for e in err)
 assert buttons_markup([]) is None
 assert buttons_markup([("A", "https://x.co", "success")]) == {"inline_keyboard": [[{"text": "A", "url": "https://x.co", "style": "success"}]]}
 assert buttons_markup([("A", "https://x.co")]) == {"inline_keyboard": [[{"text": "A", "url": "https://x.co"}]]}
@@ -215,7 +215,7 @@ with mock.patch.object(rich.httpx, "AsyncClient", FakeClient), mock.patch.object
     # sukses + bentuk payload
     FakeClient.calls, FakeClient.queue = [], [FakeResp(200, {"ok": True, "result": {"message_id": 7}})]
     r = run(send_rich("TOKEN", -100123, "<p>x</p>", media=media_list("photo", "FID", []),
-                      buttons=[("A", "https://x.co")], silent=True, protect=True))
+                      reply_markup=buttons_markup([("A", "https://x.co")]), silent=True, protect=True))
     assert r == {"message_id": 7}
     url, payload = FakeClient.calls[0]
     assert url == "https://api.telegram.org/botTOKEN/sendRichMessage"
@@ -248,5 +248,49 @@ with mock.patch.object(rich.httpx, "AsyncClient", FakeClient), mock.patch.object
     FakeClient.calls = []
     try: run(send_rich("T", 1, "x" * (rich.MAX_RICH_CHARS + 1))); raise SystemExit("harus gagal")
     except RichError as e: assert "terlalu panjang" in e.description and not FakeClient.calls
+
+# ── Jenis tombol baru: salin, bagikan, chat, popup, vote; beberapa sebaris
+bs, er = parse_buttons("Kode | salin: PROMO50 && Bagikan | bagikan: https://t.me/ch\nInfo | popup: Syarat | hijau\nAdmin | chat: @adminku\n👍 Ya && 👎 Tidak | vote")
+assert not er and [b["type"] for b in bs] == ["copy", "share", "popup", "chat", "vote", "vote"], er
+assert [b["join"] for b in bs] == [False, True, False, False, False, True] and bs[2]["style"] == "success"
+assert bs[3]["value"] == "https://t.me/adminku"
+assert parse_buttons("A | salin: " + "x" * 257)[1] and parse_buttons("A | popup: " + "x" * 201)[1] and parse_buttons("A | chat: bukan user")[1]
+assert parse_buttons("Halo | PROMO", default_type="copy")[0][0]["value"] == "PROMO"          # jenis bawaan tanpa awalan
+assert parse_buttons("\n".join(f"v{i} | vote" for i in range(9)))[1]                          # maks 8 vote
+assert [list(map(lambda b: b["label"], r)) for r in rich.rows_of(rich.prepare_buttons(bs))] == [["Kode", "Bagikan"], ["Info"], ["Admin"], ["👍 Ya", "👎 Tidak"]]
+cbm = {2: "rpp:5", 4: "rpv:9:0", 5: "rpv:9:1"}
+mk_ = rich.inline_markup(rich.prepare_buttons(bs), cbm, meta=True)["inline_keyboard"]
+assert mk_[0][0]["copy_text"] == {"text": "PROMO50"} and mk_[0][1]["url"] == "https://t.me/share/url?url=https%3A%2F%2Ft.me%2Fch"
+assert mk_[1][0]["callback_data"] == "rpp:5" and mk_[1][0]["style"] == "success" and mk_[3][1]["_vote"] == 1
+ck = rich.clean_markup({"inline_keyboard": mk_}, {0: 3})["inline_keyboard"][3]
+assert ck[0]["text"] == "👍 Ya · 3" and ck[1]["text"] == "👎 Tidak" and "_vote" not in ck[0]
+# dalam teks: hanya link/bagikan/chat/popup; salin dan vote tetap di bawah
+it, bl = rich.split_buttons(bs, True)
+assert [b["type"] for b in it] == ["share", "popup", "chat"] and [b["type"] for b in bl] == ["copy", "vote", "vote"]
+assert it[0]["join"] is False                      # tetangganya (Salin) pindah ke bawah, jadi baris baru
+h = build_rich_html("x", buttons=bs, buttons_inline=True, cb=cbm)
+assert '<tg-button type="callback_data" data="rpp:5" style="success">Info</tg-button>' in h and "PROMO50" not in h and "Ya" not in h
+
+# ── Urutan: teks utama dan media utama bisa dipindah
+T, MEDIA = {"t": "@text"}, {"t": "@media"}
+tbl = mk("table", None, "a | b\n1 | 2")[0]
+r = build_rich_html("isi", title="J", media_kind="photo", blocks=[tbl, T, MEDIA])
+assert r.index("<table") < r.index("<h2>J</h2>") < r.index("<p>isi</p>") < r.index("<figure>"), r
+assert build_rich_html("isi", media_kind="photo", blocks=[MEDIA, T]) == build_rich_html("isi", media_kind="photo")   # urutan bawaan sama
+assert build_plain_html("isi", blocks=[tbl, T], footer="f").startswith("<pre>") and build_plain_html("isi", blocks=[tbl, T]).endswith("isi")
+
+# ── Musik, berkas, spoiler galeri
+au = {"t": "audio", "file_id": "A1", "name": "Lagu", "caption": "Dengar <ini>"}; fl = {"t": "file", "file_id": "D1", "name": "x.pdf"}
+assert render_block(au, 2) == '<figure><audio src="tg://audio?id=a2"></audio><figcaption>Dengar &lt;ini&gt;</figcaption></figure>'
+assert render_block({**au, "caption": ""}, 2) == '<audio src="tg://audio?id=a2"></audio>'
+assert render_block(fl, 4) == '<tg-document src="tg://document?id=d4"></tg-document>'
+gs = {"t": "gallery", "kind": "slideshow", "files": ["F1", "F2"], "spoiler": True}
+assert render_block(gs, 1) == '<tg-slideshow><img src="tg://photo?id=g1x0" tg-spoiler/><img src="tg://photo?id=g1x1" tg-spoiler/></tg-slideshow>'
+assert media_list(None, None, [au, fl, {"t": "audio", "file_id": "V", "voice": True}]) == [
+    {"id": "a0", "media": {"type": "audio", "media": "A1"}}, {"id": "d1", "media": {"type": "document", "media": "D1"}},
+    {"id": "a2", "media": {"type": "voice_note", "media": "V"}}]
+assert block_summary(au) == "🎵 Musik: Lagu" and block_summary(gs).endswith("🙈") and plain_block(au) == plain_block(fl) == ""
+assert rich.extra_blocks([T, tbl, MEDIA]) == [tbl]
+assert rich.BLOCK_ORDER and set(rich.BLOCK_ORDER) == {t for t in rich.BLOCK_INFO if not t.startswith("@")}
 
 print("test_rich: semua lolos")
