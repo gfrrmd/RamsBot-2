@@ -1,8 +1,8 @@
-from telegram import InlineKeyboardButton as Btn, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton as Btn, InlineKeyboardMarkup, ReplyKeyboardRemove, Update
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes, ConversationHandler
 
-from auth.states import clear_user_state
+from auth.states import clear_user_state, phone_kb_shown
 from database import upsert_user
 from keyboards import main_keyboard
 from ui import build_home_text
@@ -30,5 +30,13 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     clear_user_state(uid)
+    if uid in phone_kb_shown:
+        # Tutup reply keyboard "Bagikan Kontak" yang masih tampil.
+        phone_kb_shown.discard(uid)
+        tmp = await update.message.reply_text("⏳", reply_markup=ReplyKeyboardRemove())
+        try:
+            await tmp.delete()
+        except Exception:
+            pass
     await update.message.reply_text("❌ Dibatalkan. Kembali ke menu utama.", reply_markup=main_keyboard(uid))
     return ConversationHandler.END

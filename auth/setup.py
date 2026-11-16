@@ -2,11 +2,11 @@ import asyncio
 import time
 from datetime import timezone, timedelta
 
-from telegram import Update
+from telegram import KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove, Update
 from telegram.ext import ContextTypes, ConversationHandler
 from telethon.errors import PhoneCodeExpiredError, PhoneCodeInvalidError, SessionPasswordNeededError
 
-from auth.states import CODE_STEP, PASSWORD_STEP, PHONE_STEP, temp_store
+from auth.states import CODE_STEP, PASSWORD_STEP, PHONE_STEP, phone_kb_shown, temp_store
 from client_manager import active_clients, build_client, dl_locks, _start_time
 from config import API_ID, API_HASH
 from database import activate_trial, is_subscribed, save_user_session
@@ -56,19 +56,48 @@ def register_telethon_handlers(client, user_id: int, bot_client=None):
     register_cekvip_handler(client)
 
 
+def _share_contact_keyboard() -> ReplyKeyboardMarkup:
+    """Tombol 'Bagikan Kontak Saya' (muncul di bawah, menggantikan keyboard ketik)."""
+    return ReplyKeyboardMarkup(
+        [[KeyboardButton("📱 Bagikan Kontak Saya", request_contact=True)]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+        input_field_placeholder="+6281234567890",
+    )
+
+
+def _normalize_phone(raw: str) -> str:
+    """Pastikan nomor diawali '+' dan hanya berisi digit (nomor dari kontak Telegram sering tanpa '+')."""
+    raw = raw.strip()
+    digits = "".join(ch for ch in raw if ch.isdigit())
+    return "+" + digits if digits else raw
+
+
 async def _ask_phone_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "*🤖 Setup Bot Telegram*\n\n"
         "Proses ini menghubungkan akun Telegram ke bot.\n\n"
         "*Langkah 1/3 — Nomor HP 📲*\n\n"
-        "Masukkan nomor HP yang terdaftar di akun Telegram kamu.\n"
+        "Tekan tombol *📱 Bagikan Kontak Saya* di bawah untuk mengirim nomor kamu otomatis, "
+        "atau ketik manual nomor HP yang terdaftar di akun Telegram kamu.\n"
         "Contoh: `+6281234567890`\n\n"
-        "Kirim nomor HP kamu, atau /cancel untuk batal:"
+        "Atau /cancel untuk batal."
     )
+    uid = update.effective_user.id
     if update.callback_query:
-        await update.callback_query.edit_message_text(text, parse_mode="Markdown")
+        # Reply keyboard hanya bisa dikirim lewat pesan baru, bukan edit_message_text.
+        await update.callback_query.edit_message_text(
+            "*🤖 Setup Bot Telegram*\n\nMemulai proses setup…", parse_mode="Markdown"
+        )
+        chat_id = update.callback_query.message.chat_id
+        await context.bot.send_message(
+            chat_id, text, parse_mode="Markdown", reply_markup=_share_contact_keyboard()
+        )
     else:
-        await update.message.reply_text(text, parse_mode="Markdown")
+        await update.message.reply_text(
+            text, parse_mode="Markdown", reply_markup=_share_contact_keyboard()
+        )
+    phone_kb_shown.add(uid)
     return PHONE_STEP
 
 
@@ -145,13 +174,30 @@ async def cmd_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def setup_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    phone = update.message.text.strip()
+    msg = update.message
+
+    if msg.contact:
+        # Keamanan: hanya terima kontak milik akun yang sedang setup (bukan kontak orang lain
+        # yang di-forward / dipilih manual lewat menu attach).
+        if msg.contact.user_id != uid:
+            await msg.reply_text(
+                "⚠️ Itu bukan kontak akun kamu sendiri.\n\n"
+                "Tekan tombol *📱 Bagikan Kontak Saya* atau ketik nomor HP akun kamu secara manual.",
+                parse_mode="Markdown",
+                reply_markup=_share_contact_keyboard(),
+            )
+            return PHONE_STEP
+        phone = _normalize_phone(msg.contact.phone_number)
+    else:
+        phone = _normalize_phone(msg.text or "")
+
+    phone_kb_shown.discard(uid)
     client = build_client(API_ID, API_HASH)
     try:
         await client.connect()
         result = await client.send_code_request(phone)
         temp_store[uid] = {"phone": phone, "phone_hash": result.phone_code_hash, "client": client}
-        await update.message.reply_text(
+        await msg.reply_text(
             "📨 Kode OTP berhasil dikirim ke Telegram kamu!\n\n"
             "*Langkah 2/3 — Kode OTP 🔢*\n\n"
             "Ketik kode dengan spasi di antara setiap angka.\n\n"
@@ -159,12 +205,15 @@ async def setup_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "❌ Contoh Salah: `12345`\n\n"
             "Kirim kode OTP kamu, atau /cancel untuk batal:",
             parse_mode="Markdown",
+            reply_markup=ReplyKeyboardRemove(),
         )
         return CODE_STEP
     except Exception as e:
         await client.disconnect()
         temp_store.pop(uid, None)
-        await update.message.reply_text(
+        # Hapus reply keyboard dulu, lalu tampilkan pesan error + menu utama.
+        await msg.reply_text("⏳", reply_markup=ReplyKeyboardRemove())
+        await msg.reply_text(
             f"❌ Gagal mengirim OTP: {e}\n\nSilakan /setup ulang dari awal.",
             reply_markup=main_keyboard(uid)
         )

@@ -82,7 +82,7 @@ def main():
             CallbackQueryHandler(setup_continue_after_trial_callback, pattern="^setup_continue_after_trial$"),
         ],
         states={
-            PHONE_STEP: [MessageHandler(filters.TEXT & ~filters.COMMAND, setup_phone)],
+            PHONE_STEP: [MessageHandler((filters.TEXT & ~filters.COMMAND) | filters.CONTACT, setup_phone)],
             CODE_STEP: [MessageHandler(filters.TEXT & ~filters.COMMAND, setup_code)],
             PASSWORD_STEP: [MessageHandler(filters.TEXT & ~filters.COMMAND, setup_password)],
         },

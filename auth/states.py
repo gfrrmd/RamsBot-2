@@ -1,6 +1,8 @@
 PHONE_STEP, CODE_STEP, PASSWORD_STEP = range(3)
 
 temp_store: dict[int, dict] = {}
+# User yang sedang melihat tombol reply-keyboard "Bagikan Kontak" (perlu dibersihkan saat cancel).
+phone_kb_shown: set[int] = set()
 waiting_restore: set[int] = set()
 waiting_gift: set[int] = set()
 waiting_revoke: set[int] = set()
