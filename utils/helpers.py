@@ -123,6 +123,28 @@ def is_channel_restricted(channel_identifier) -> bool:
         return False
 
 
+RESTRICTED_ACCOUNT_NOTICE = (
+    "🚫 **Akun ini tidak dapat di-download.**\n\n"
+    "Akun ini termasuk dalam daftar yang dibatasi (restricted) oleh admin."
+)
+
+
+def is_entity_restricted(entity) -> bool:
+    """Cek apakah akun Telegram (entity Telethon) ada di daftar Restricted Account.
+    ID hanya dicocokkan untuk User asli (ruang ID user/chat bisa bertabrakan);
+    username dicocokkan untuk entity apa pun."""
+    if entity is None:
+        return False
+    try:
+        from telethon.tl.types import User
+        from database import is_account_restricted
+        uid = getattr(entity, "id", None) if isinstance(entity, User) else None
+        return is_account_restricted(uid, getattr(entity, "username", None))
+    except Exception as e:
+        print(f"[restricted_account] gagal cek: {e}")
+        return False
+
+
 def _dl_dedup_check(user_id: int, event_id: int) -> bool:
     seen = dl_seen.setdefault(user_id, set())
     if event_id in seen:

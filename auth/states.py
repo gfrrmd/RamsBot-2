@@ -42,8 +42,10 @@ def clear_user_state(uid: int):
     rich_draft.pop(uid, None)
     admin_state.pop(uid, None)
     try:
-        from admin.callbacks import waiting_bl_add, waiting_bl_remove
+        from admin.callbacks import waiting_bl_add, waiting_bl_remove, waiting_ra_add, waiting_ra_remove
         waiting_bl_add.discard(uid)
         waiting_bl_remove.discard(uid)
+        waiting_ra_add.discard(uid)
+        waiting_ra_remove.discard(uid)
     except Exception:
         pass

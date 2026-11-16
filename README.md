@@ -68,7 +68,7 @@ Set di Railway → tab **Variables** (atau `.env` untuk lokal). Daftar lengkap a
 | `API_ID` | ✅ | API ID dari [my.telegram.org](https://my.telegram.org) |
 | `API_HASH` | ✅ | API Hash dari [my.telegram.org](https://my.telegram.org) |
 | `RESTRICTED_CHANNELS` | ❌ | JSON array channel ID yang diblokir, contoh `[-1001234, -1005678]` (default `[]`) |
-| `LOG_CHANNEL_ID` | ❌ | ID channel log admin (default `0` = nonaktif) |
+| `LOG_CHANNEL_ID` | ❌ | ID channel log admin (default `0` = nonaktif). Log yang dikirim: Setup Berhasil, `.dl`, `.story`, `.copy` (channel private/publik), Auto DL, dan Timer Outgoing |
 | `BACKUP_CHANNEL_ID` | ❌ | Channel tujuan auto backup, bisa juga diatur dari menu admin (default `0`) |
 | `ADMIN_CONTACT` | ❌ | Kontak admin yang tampil ke user (default `@kqrbit`) |
 | `BOT_NAME` | ❌ | Nama di header bot (default `RamsBot`) |

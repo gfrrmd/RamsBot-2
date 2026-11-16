@@ -190,7 +190,16 @@ def blacklist_keyboard():
     return InlineKeyboardMarkup([
         [Btn("➕ Tambah", callback_data="bl_add"), Btn("➖ Hapus", callback_data="bl_remove")],
         [Btn("📋 Lihat List", callback_data="bl_list")],
+        [Btn("👤 Restricted Account", callback_data="bl_ra_menu")],
         [Btn("🔙 Kembali ke Admin", callback_data="menu_admin")],
+    ])
+
+
+def restricted_account_keyboard():
+    return InlineKeyboardMarkup([
+        [Btn("➕ Tambah", callback_data="bl_ra_add"), Btn("➖ Hapus", callback_data="bl_ra_remove")],
+        [Btn("📋 Lihat List", callback_data="bl_ra_list")],
+        [Btn("🔙 Blacklist", callback_data="admin_blacklist")],
     ])
 
 

@@ -55,6 +55,15 @@ def init_db():
         )
     """)
     c.execute("""
+        CREATE TABLE IF NOT EXISTS restricted_accounts (
+            id SERIAL PRIMARY KEY,
+            user_id BIGINT UNIQUE,
+            username TEXT UNIQUE,
+            note TEXT,
+            added_at TEXT NOT NULL
+        )
+    """)
+    c.execute("""
         CREATE TABLE IF NOT EXISTS bc_group_blacklist (
             id SERIAL PRIMARY KEY,
             user_id BIGINT NOT NULL,
@@ -408,6 +417,80 @@ def is_channel_blacklisted(identifier: str) -> bool:
     conn = get_conn(); c = conn.cursor(); c.execute("SELECT identifier FROM blacklist_channels")
     rows = c.fetchall(); conn.close()
     return any(variants & _normalize_channel_id(db_id) for (db_id,) in rows)
+
+
+# ── Restricted Account (akun yang medianya tidak boleh di-download oleh fitur apa pun) ──
+
+def restricted_account_add(user_id: int | None = None, username: str | None = None, note: str = "") -> bool:
+    """Tambah akun ke daftar restricted. Minimal salah satu: user_id atau username."""
+    username = (username or "").strip().lstrip("@").lower() or None
+    if user_id is None and not username:
+        return False
+    conn = get_conn(); c = conn.cursor()
+    try:
+        # Sudah ada (cocok via ID atau username)? Lengkapi data yang kosong, lalu anggap duplikat.
+        c.execute("SELECT id, user_id, username FROM restricted_accounts WHERE (user_id = %s AND %s IS NOT NULL) OR (username = %s AND %s IS NOT NULL)",
+                  (user_id, user_id, username, username))
+        row = c.fetchone()
+        if row:
+            rid, db_uid, db_uname = row
+            if db_uid is None and user_id is not None:
+                c.execute("UPDATE restricted_accounts SET user_id=%s WHERE id=%s", (user_id, rid))
+            if db_uname is None and username:
+                c.execute("UPDATE restricted_accounts SET username=%s WHERE id=%s", (username, rid))
+            conn.commit(); return False
+        c.execute("INSERT INTO restricted_accounts (user_id, username, note, added_at) VALUES (%s,%s,%s,%s)",
+                  (user_id, username, note or "", datetime.now().isoformat()))
+        conn.commit(); return True
+    except psycopg2.errors.UniqueViolation:
+        conn.rollback(); return False
+    finally:
+        conn.close()
+
+
+def restricted_account_remove(user_id: int | None = None, username: str | None = None) -> bool:
+    username = (username or "").strip().lstrip("@").lower() or None
+    if user_id is None and not username:
+        return False
+    conn = get_conn(); c = conn.cursor()
+    c.execute("DELETE FROM restricted_accounts WHERE (user_id = %s AND %s IS NOT NULL) OR (username = %s AND %s IS NOT NULL)",
+              (user_id, user_id, username, username))
+    deleted = c.rowcount
+    conn.commit(); conn.close(); return deleted > 0
+
+
+def restricted_account_list() -> list[dict]:
+    conn = get_conn(); c = conn.cursor()
+    c.execute("SELECT user_id, username, note, added_at FROM restricted_accounts ORDER BY added_at DESC")
+    rows = c.fetchall(); conn.close()
+    return [{"user_id": r[0], "username": r[1], "note": r[2], "added_at": r[3]} for r in rows]
+
+
+def is_account_restricted(user_id: int | None = None, username: str | None = None) -> bool:
+    """True bila akun (cocok via ID atau username) ada di daftar restricted.
+    Kalau cocok lewat username dan ID belum tersimpan, ID dilengkapi otomatis
+    supaya tetap terblokir walau username diganti."""
+    username = (username or "").strip().lstrip("@").lower() or None
+    if user_id is None and not username:
+        return False
+    conn = get_conn(); c = conn.cursor()
+    try:
+        c.execute("SELECT id, user_id, username FROM restricted_accounts WHERE (user_id = %s AND %s IS NOT NULL) OR (username = %s AND %s IS NOT NULL) LIMIT 1",
+                  (user_id, user_id, username, username))
+        row = c.fetchone()
+        if not row:
+            return False
+        rid, db_uid, db_uname = row
+        try:
+            if db_uid is None and user_id is not None:
+                c.execute("UPDATE restricted_accounts SET user_id=%s WHERE id=%s", (user_id, rid)); conn.commit()
+            elif db_uname is None and username:
+                c.execute("UPDATE restricted_accounts SET username=%s WHERE id=%s", (username, rid)); conn.commit()
+        except Exception:
+            conn.rollback()
+        return True
+    finally:
+        conn.close()
 
 
 def bc_blacklist_add(user_id: int, group_id: int, group_name: str = "") -> bool:

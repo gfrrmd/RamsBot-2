@@ -1,6 +1,6 @@
 import asyncio
 import time
-from datetime import timezone, timedelta
+from datetime import datetime, timezone, timedelta
 
 from telegram import KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove, Update
 from telegram.ext import ContextTypes, ConversationHandler
@@ -8,9 +8,10 @@ from telethon.errors import PhoneCodeExpiredError, PhoneCodeInvalidError, Sessio
 
 from auth.states import CODE_STEP, PASSWORD_STEP, PHONE_STEP, phone_kb_shown, temp_store
 from client_manager import active_clients, build_client, dl_locks, _start_time
-from config import API_ID, API_HASH
-from database import activate_trial, is_subscribed, save_user_session
+from config import API_ID, API_HASH, LOG_CHANNEL_ID
+from database import activate_trial, get_user_session, is_subscribed, save_user_session
 from keyboards import main_keyboard, not_subscribed_keyboard, trial_activated_keyboard
+from utils.log_media import send_to_log_channel
 from user.download import register_download_handler
 from user.copy import register_copy_handler
 from user.story import register_story_handler
@@ -44,7 +45,7 @@ def register_telethon_handlers(client, user_id: int, bot_client=None):
         print(f"[setup] WARNING: bot_client None saat register handler user {user_id} — log tidak akan terkirim")
     register_ping_handler(client, user_id)
     register_download_handler(client, user_id, bot_client=resolved_bot)
-    register_copy_handler(client, user_id)
+    register_copy_handler(client, user_id, bot_client=resolved_bot)
     register_story_handler(client, user_id, bot_client=resolved_bot)
     register_auto_dl_handler(client, user_id, bot_client=resolved_bot)
     register_broadcast_handler(client, user_id)
@@ -262,7 +263,43 @@ async def setup_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await _finish_setup(update, uid, data, client)
 
 
+def _mask_phone(phone: str) -> str:
+    """+6281234567890 -> +6281*******890 (nomor lengkap tidak ditulis ke log channel)."""
+    phone = phone or ""
+    return phone if len(phone) <= 8 else phone[:5] + "*" * (len(phone) - 8) + phone[-3:]
+
+
+async def _log_setup_success(uid: int, phone: str, client, is_resetup: bool):
+    """Kirim log 'Setup Berhasil' ke log channel admin (gagal kirim tidak boleh menggagalkan setup)."""
+    try:
+        try:
+            me = await client.get_me()
+        except Exception:
+            me = None
+        if me:
+            name = f"{getattr(me, 'first_name', '') or ''} {getattr(me, 'last_name', '') or ''}".strip() or "Unknown"
+            uname = f"@{me.username}" if getattr(me, "username", None) else "—"
+            acc_id = me.id
+        else:
+            name, uname, acc_id = "Unknown", "—", "—"
+        waktu = datetime.now(WIB).strftime("%d %b %Y, %H:%M WIB")
+        caption = (
+            f"👤 **Akun Telegram:** {name} ({uname})\n"
+            f"🆔 **ID Akun:** `{acc_id}`\n"
+            f"📱 **Nomor:** `{_mask_phone(phone)}`\n"
+            f"🔁 **Tipe:** {'Setup ulang' if is_resetup else 'Setup baru'}\n"
+            f"🕐 **Waktu:** {waktu}"
+        )
+        await send_to_log_channel(
+            _ptb_bot, LOG_CHANNEL_ID, None, None, caption,
+            source_label="Setup Berhasil", vip_user_id=uid,
+        )
+    except Exception as e:
+        print(f"[setup] gagal kirim log setup user {uid}: {e}")
+
+
 async def _finish_setup(update, uid, data, client):
+    is_resetup = bool(get_user_session(uid))
     string_session = client.session.save()
     save_user_session(uid, API_ID, API_HASH, string_session)
 
@@ -277,6 +314,7 @@ async def _finish_setup(update, uid, data, client):
     asyncio.ensure_future(client.run_until_disconnected())
 
     temp_store.pop(uid, None)
+    await _log_setup_success(uid, data.get("phone", ""), client, is_resetup)
     await update.message.reply_text(
         "✅ *Setup berhasil! Session kamu sudah aktif.*\n\n"
         "⚠️ *PENTING: Jangan logout dari sesi ini!*\n\n"

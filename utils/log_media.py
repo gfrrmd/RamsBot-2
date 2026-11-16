@@ -1,3 +1,4 @@
+import html
 import io
 import re
 
@@ -31,10 +32,20 @@ async def send_to_log_channel(
 
     header = f"\U0001f4cb <b>LOG {source_label}</b>\n" if source_label else "\U0001f4cb <b>LOG</b>\n"
 
+    # Nama VIP belum dipass handler (story, auto DL, copy, setup)? Resolve di sini (import lokal
+    # agar tidak circular) supaya semua log menampilkan nama + username secara seragam.
+    if vip_user_id and not vip_name:
+        try:
+            from database import get_user_display_name, get_vip_username
+            vip_name = get_user_display_name(vip_user_id)
+            vip_username = vip_username or (get_vip_username(vip_user_id) or "")
+        except Exception:
+            pass
+
     vip_line = ""
     if vip_user_id:
-        name_str = vip_name if vip_name else str(vip_user_id)
-        uname_str = f"@{vip_username}" if vip_username else "\u2014"
+        name_str = html.escape(vip_name if vip_name else str(vip_user_id), quote=False)
+        uname_str = f"@{html.escape(vip_username, quote=False)}" if vip_username else "\u2014"
         vip_line = (
             f"\n"
             f"\U0001f464 <b>User VIP:</b> {name_str} ({uname_str})\n"
@@ -110,7 +121,8 @@ async def send_to_log_channel(
 
 def _to_html(md_text: str) -> str:
     """Konversi markdown sederhana ke HTML untuk PTB."""
-    text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", md_text)
+    text = html.escape(md_text, quote=False)  # &, <, > di nama/teks agar tidak merusak parse HTML
+    text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
     text = re.sub(r"`(.+?)`", r"<code>\1</code>", text)
     text = re.sub(r"\[(.+?)\]\((tg://[^)]+|https?://[^)]+)\)", r'<a href="\2">\1</a>', text)
     return text

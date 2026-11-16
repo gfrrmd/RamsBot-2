@@ -7,7 +7,7 @@ from client_manager import stop_client_for_user
 from config import LOG_CHANNEL_ID
 from database import is_subscribed
 from user.tasks import _active_tasks, _make_task_id
-from utils.helpers import escape_md, extract_story_link
+from utils.helpers import RESTRICTED_ACCOUNT_NOTICE, escape_md, extract_story_link, is_entity_restricted
 from utils.log_media import send_to_log_channel
 from utils.media import _send_story_file
 from utils.progress import download_bytes_with_progress
@@ -34,6 +34,10 @@ def register_story_handler(client, user_id: int, bot_client=None):
             peer = await client.get_entity(username)
         except Exception as e:
             await status_msg.edit(f"❌ Gagal menemukan akun @{username}.\nPastikan username benar dan akun tidak private.\nError: {e}")
+            return
+
+        if is_entity_restricted(peer):
+            await status_msg.edit(RESTRICTED_ACCOUNT_NOTICE)
             return
 
         story_media = story_date = story_text = None

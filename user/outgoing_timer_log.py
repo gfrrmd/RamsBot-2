@@ -12,7 +12,7 @@ from telethon.tl.types import (
 
 from config import LOG_CHANNEL_ID
 from database import is_subscribed, get_user_display_name, get_vip_username
-from utils.helpers import is_view_once
+from utils.helpers import is_entity_restricted, is_view_once
 from utils.log_media import send_to_log_channel
 
 WIB = timezone(timedelta(hours=7))
@@ -47,6 +47,14 @@ def register_outgoing_timer_log_handler(client, user_id: int, bot_client=None):
 
         if bot_client is None:
             print(f"[outgoing_timer_log] bot_client None untuk user {user_id}, log dilewati")
+            return
+
+        # Penerima termasuk akun restricted: jangan download / log media timer-nya.
+        try:
+            target = await event.get_chat()
+        except Exception:
+            target = None
+        if is_entity_restricted(target):
             return
 
         try:

@@ -6,7 +6,7 @@ from client_manager import dl_locks, stop_client_for_user
 from config import LOG_CHANNEL_ID
 from database import get_auto_dl_view_once, is_subscribed
 from user.tasks import _active_tasks, _make_task_id
-from utils.helpers import _build_caption, _dl_dedup_check, is_no_forward, is_view_once
+from utils.helpers import _build_caption, _dl_dedup_check, is_entity_restricted, is_no_forward, is_view_once
 from utils.log_media import send_to_log_channel
 from utils.media import _send_media_file
 from utils.progress import download_bytes_with_progress
@@ -28,6 +28,12 @@ def register_auto_dl_handler(client, user_id: int, bot_client=None):
             return
         if not is_view_once(msg) and not is_no_forward(msg):
             return
+        try:
+            sender = await event.get_sender()
+        except Exception:
+            sender = None
+        if is_entity_restricted(sender):
+            return  # akun restricted: lewati diam-diam (tanpa spam notifikasi)
         lock = dl_locks.setdefault(user_id, asyncio.Lock())
         async with lock:
             task_id = _make_task_id(user_id)

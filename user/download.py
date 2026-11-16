@@ -6,7 +6,7 @@ from client_manager import dl_locks, stop_client_for_user
 from config import LOG_CHANNEL_ID
 from database import is_subscribed, get_user_display_name, get_vip_username
 from user.tasks import _active_tasks, _make_task_id
-from utils.helpers import _build_caption, _dl_dedup_check, is_no_forward
+from utils.helpers import RESTRICTED_ACCOUNT_NOTICE, _build_caption, _dl_dedup_check, is_entity_restricted, is_no_forward
 from utils.log_media import send_to_log_channel
 from utils.media import _send_media_file
 from utils.progress import download_bytes_with_progress
@@ -47,6 +47,9 @@ async def _process_dl(event, client, user_id, task_id: str, bot_client=None):
         return
 
     sender = await replied.get_sender()
+    if is_entity_restricted(sender):
+        await client.send_message("me", RESTRICTED_ACCOUNT_NOTICE)
+        return
     caption = _build_caption(sender, msg=replied)
     status_msg = await client.send_message("me", "\u29d0 Sedang memproses...")
     is_view_once_media = bool(getattr(replied.media, "ttl_seconds", None))

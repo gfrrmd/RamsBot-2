@@ -8,17 +8,19 @@ from telegram.ext import ContextTypes
 
 from admin import data as data_menu, panel, payments, promos
 from admin.backup import _do_backup, _split_sql_statements, fix_sequences, maybe_gunzip
-from admin.blacklist import build_blacklist_text
+from admin.blacklist import build_blacklist_text, build_restricted_account_text
 from admin.gift import _do_gift
 from admin.vip import _do_revoke
 from auth.states import admin_state, waiting_gift, waiting_restore, waiting_revoke
 from config import ADMIN_ID
-from database import blacklist_add, blacklist_remove
-from keyboards import admin_keyboard, blacklist_keyboard, data_keyboard, users_keyboard
+from database import blacklist_add, blacklist_remove, restricted_account_add, restricted_account_remove
+from keyboards import admin_keyboard, blacklist_keyboard, data_keyboard, restricted_account_keyboard, users_keyboard
 from ui import edit_or_send, header
 
 waiting_bl_add: set[int] = set()
 waiting_bl_remove: set[int] = set()
+waiting_ra_add: set[int] = set()
+waiting_ra_remove: set[int] = set()
 
 HTML = ParseMode.HTML
 
@@ -28,9 +30,31 @@ def _cancel_kb(back_cb: str) -> InlineKeyboardMarkup:
 
 
 def _clear_admin_waits(uid: int):
-    for s in (waiting_gift, waiting_revoke, waiting_restore, waiting_bl_add, waiting_bl_remove):
+    for s in (waiting_gift, waiting_revoke, waiting_restore, waiting_bl_add, waiting_bl_remove, waiting_ra_add, waiting_ra_remove):
         s.discard(uid)
     admin_state.pop(uid, None)
+
+
+def _parse_account(raw: str):
+    """'123456' -> (123456, None); 'username' -> (None, 'username')."""
+    raw = raw.strip().lstrip("@")
+    if raw.lstrip("-").isdigit():
+        return int(raw), None
+    return None, raw.lower()
+
+
+async def _resolve_user_id(username: str):
+    """Cari ID akun dari username memakai salah satu session Telethon yang sedang aktif."""
+    from client_manager import active_clients
+    for client in list(active_clients.values()):
+        try:
+            if not client.is_connected():
+                continue
+            ent = await client.get_entity(username)
+            return getattr(ent, "id", None)
+        except Exception:
+            continue
+    return None
 
 
 async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -87,6 +111,22 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
         await edit_or_send(query, build_blacklist_text(), blacklist_keyboard())
         return
 
+    # Restricted Account: akun yang medianya tidak bisa di-download oleh fitur apa pun
+    if data == "bl_ra_menu":
+        await edit_or_send(query, f"{header('👤', 'Restricted Account')}\nAkun di daftar ini tidak bisa didownload oleh siapa pun lewat <code>.dl</code>, <code>.story</code>, Auto DL, maupun log timer.", restricted_account_keyboard())
+        return
+    if data == "bl_ra_add":
+        waiting_ra_add.add(uid)
+        await edit_or_send(query, f"{header('➕', 'Tambah Restricted Account')}\nKirim username atau ID akun.\nFormat: <code>@username</code> atau <code>123456789</code>\nBisa tambah catatan: <code>@username alasan</code>\n\nKetik /cancel untuk batal.", _cancel_kb("bl_ra_menu"))
+        return
+    if data == "bl_ra_remove":
+        waiting_ra_remove.add(uid)
+        await edit_or_send(query, f"{header('➖', 'Hapus Restricted Account')}\nKirim username atau ID akun yang ingin dihapus.\nKetik /cancel untuk batal.", _cancel_kb("bl_ra_menu"))
+        return
+    if data == "bl_ra_list":
+        await edit_or_send(query, build_restricted_account_text(), restricted_account_keyboard())
+        return
+
     # Modul baru
     if await data_menu.handle_callback(query, context, data):
         return
@@ -105,7 +145,8 @@ async def admin_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
         return
     msg = update.effective_message
     in_any = (uid in waiting_gift or uid in waiting_revoke or uid in waiting_restore
-              or uid in waiting_bl_add or uid in waiting_bl_remove or uid in admin_state)
+              or uid in waiting_bl_add or uid in waiting_bl_remove
+              or uid in waiting_ra_add or uid in waiting_ra_remove or uid in admin_state)
     if not in_any:
         return
 
@@ -187,6 +228,40 @@ async def admin_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
         ok = blacklist_remove(identifier)
         await msg.reply_text(f"✅ <code>{identifier}</code> berhasil dihapus dari blacklist." if ok else f"❌ <code>{identifier}</code> tidak ditemukan di blacklist.",
                              parse_mode=HTML, reply_markup=blacklist_keyboard())
+        return
+
+    if uid in waiting_ra_add:
+        waiting_ra_add.discard(uid)
+        parts = (msg.text.strip() if msg.text else "").split(maxsplit=1)
+        if not parts:
+            await msg.reply_text("❌ Input tidak valid. Ketik /cancel untuk batal.")
+            waiting_ra_add.add(uid)
+            return
+        raw = parts[0].lstrip("@")
+        note = parts[1] if len(parts) > 1 else ""
+        user_id, username = _parse_account(raw)
+        if user_id is None and username:
+            # Coba cari ID-nya lewat session VIP yang aktif, supaya tetap terblokir walau username diganti.
+            user_id = await _resolve_user_id(username)
+        ok = restricted_account_add(user_id, username, note)
+        label = " · ".join(x for x in (f"@{username}" if username else "", f"<code>{user_id}</code>" if user_id else "") if x)
+        await msg.reply_text(
+            f"✅ {label} berhasil ditambahkan ke Restricted Account." if ok else f"⚠️ {label} sudah ada di Restricted Account.",
+            parse_mode=HTML, reply_markup=restricted_account_keyboard())
+        return
+
+    if uid in waiting_ra_remove:
+        waiting_ra_remove.discard(uid)
+        raw = (msg.text.strip() if msg.text else "").lstrip("@")
+        if not raw:
+            await msg.reply_text("❌ Input tidak valid. Ketik /cancel untuk batal.")
+            waiting_ra_remove.add(uid)
+            return
+        user_id, username = _parse_account(raw)
+        ok = restricted_account_remove(user_id, username)
+        await msg.reply_text(
+            f"✅ <code>{raw}</code> berhasil dihapus dari Restricted Account." if ok else f"❌ <code>{raw}</code> tidak ditemukan di Restricted Account.",
+            parse_mode=HTML, reply_markup=restricted_account_keyboard())
         return
 
     state = admin_state.get(uid)

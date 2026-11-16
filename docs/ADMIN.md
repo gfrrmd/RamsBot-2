@@ -25,7 +25,7 @@ Perintah admin: `/admin`, `/stats`, `/backup`, `/gift`, `/revoke`.
 | 💳 Pembayaran | Set QRIS penerima, kelola paket dan harga, kode unik, batas waktu, verifikasi order, auto-verifikasi |
 | 👥 Pengguna | List VIP berpaginasi, Cek User (kartu dengan tombol +7/+30 hari dan revoke), Gift, Revoke, Pengumuman (teks/media ke semua user) |
 | 🏷️ Promosi | Kode Promo dan Voucher |
-| 🔒 Blacklist | Channel yang tidak bisa diunduh lewat `.copy` oleh siapa pun |
+| 🔒 Blacklist | Channel yang tidak bisa diunduh lewat `.copy` oleh siapa pun. Submenu **👤 Restricted Account**: akun yang medianya tidak bisa diunduh lewat `.dl`, `.story`, Auto DL, dan log timer outgoing |
 | 🗄️ Data | Info ukuran dan jumlah data, Backup DB, Restore DB (`.sql` / `.sql.gz`), Auto Backup, Bersihkan Data |
 
 **Auto Backup:** jadwal 6j/12j/24j/3h/7h dikirim ke PM admin (dan channel opsional) sebagai `.sql.gz`.

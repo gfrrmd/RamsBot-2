@@ -60,6 +60,7 @@ tests/                     Tes tanpa framework (python tests/<file>.py)
 | `vip_tokens`, `vip_token_log` | Token VIP dan riwayat pemindahan |
 | `promo_codes`, `vouchers`, `voucher_claims` | Kode promo, voucher, dan klaimnya |
 | `blacklist_channels` | Channel yang diblokir admin untuk `.copy` |
+| `restricted_accounts` | Akun (ID/username) yang medianya diblokir dari semua downloader |
 | `bc_group_blacklist` | Grup yang dilewati per user saat broadcast |
 | `auto_block_channels` | Channel pantauan Auto Block Leaver per user |
 | `rich_targets` 🆕 | Channel/grup tujuan Rich Post per user (maks 20) |
