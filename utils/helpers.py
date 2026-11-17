@@ -9,11 +9,20 @@ dl_seen: dict[int, set] = {}
 
 
 def escape_md(text):
+    """Siapkan teks (nama/judul) untuk caption berformat markdown Telethon.
+
+    Markdown Telethon TIDAK mengenal escape dengan backslash, jadi "\\_" justru
+    tampil apa adanya sebagai garis miring. Karena itu simbol biasa seperti _ ( ) [ ] * dibiarkan
+    utuh, dan hanya urutan yang benar-benar bisa memecah format yang dinetralkan
+    dengan karakter tak terlihat (zero-width space): ** __ ~~ || dan ](.
+    Backtick diganti ˋ yang mirip, karena backtick tunggal bisa membuka blok kode.
+    """
     if not text:
         return "Unknown"
-    for ch in ["[", "]", "(", ")", "*", "_", "`"]:
-        text = text.replace(ch, f"\\{ch}")
-    return text
+    text = text.replace("`", "\u02cb")
+    for tok in ("**", "__", "~~", "||"):
+        text = text.replace(tok, tok[0] + "\u200b" + tok[1])
+    return text.replace("](", "]\u200b(")
 
 
 def is_no_forward(message):
