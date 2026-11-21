@@ -24,6 +24,7 @@ Perintah titik diketik dari **akun Telegram kamu sendiri** di chat mana saja (bu
 | **Hapus Pesan** | Menu bot | Hapus pesanmu di 1 chat, semua grup/channel/pribadi, atau komentar channel, dengan pengecualian dan rentang waktu |
 | **GBAN** | `.gban` `.ungban` `.gbanlist` | Blokir satu akun dari semua grup/channel tempat kamu admin, plus auto-ban saat join |
 | **Rich Post** | Menu bot | Posting ke channel/grup dengan format Rich Messages: tombol Link/Salin/Bagikan/Chat/Popup/Vote, tombol sebaris, blok (tabel, daftar, musik, berkas, galeri spoiler), urutan bisa digeser ([panduan](docs/RICH_POST.md)) |
+| **Verifikasi bukti bayar** | Panel Admin → Pembayaran | 3 mode: **Manual**, **OCR saja**, **OCR + AI Gemini** (free tier). AI memastikan gambar benar-benar bukti transfer; gagal baca → otomatis ke admin ([detail](docs/PEMBAYARAN.md)) |
 | Pengingat VIP | Otomatis | Notifikasi H-3 dan H-1 sebelum VIP habis |
 
 > Perintah titik dan Auto Block Leaver butuh **session aktif**. **Rich Post** berjalan sepenuhnya lewat bot, tanpa session. **Hapus Pesan** dan **GBAN** butuh session aktif.
@@ -73,6 +74,12 @@ Set di Railway → tab **Variables** (atau `.env` untuk lokal). Daftar lengkap a
 | `ADMIN_CONTACT` | ❌ | Kontak admin yang tampil ke user (default `@kqrbit`) |
 | `BOT_NAME` | ❌ | Nama di header bot (default `RamsBot`) |
 | `WEBAPP_URL` | ❌ | URL Mini App tanpa garis miring di akhir. Mengaktifkan tombol **Buka Mini App** dan **Console Web** |
+| `GEMINI_API_KEY` | ❌ | API key Gemini (free tier) dari [aistudio.google.com/apikey](https://aistudio.google.com/apikey). Dibutuhkan untuk mode verifikasi **OCR + AI**; kosong = mode itu tidak bisa dipilih |
+| `GEMINI_MODELS` | ❌ | Model dipisah koma, dicoba berurutan bila kena limit (default `gemini-3.8-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite`) |
+| `GEMINI_TIMEOUT` | ❌ | Batas waktu tiap permintaan Gemini dalam detik (default `25`) |
+| `GEMINI_RPM` | ❌ | Batas permintaan Gemini per menit dari sisi bot, agar kuota free tidak habis (default `8`) |
+
+> **Mode verifikasi bukti bayar** diatur dari bot (Panel Admin → Pembayaran → Pengaturan → **Mode Verifikasi**), bukan lewat variable. Urutannya Manual → OCR saja → OCR + AI. Data bukti transfer yang dikirim ke Gemini free tier bisa dipakai Google untuk meningkatkan produknya; lihat catatan privasi di [docs/PEMBAYARAN.md](docs/PEMBAYARAN.md).
 
 ---
 
@@ -113,7 +120,8 @@ python main.py
 
 ```bash
 python tests/test_codes.py      # token, kode promo/voucher, limiter
-python tests/test_receipt.py    # parser bukti bayar
+python tests/test_receipt.py    # parser bukti bayar (OCR)
+python tests/test_receipt_ai.py # OCR + AI Gemini: parser respons, penggabungan hasil, fallback (jaringan di-mock)
 python tests/test_rich.py       # Rich HTML, parser, klien API (jaringan di-mock)
 ```
 
@@ -125,6 +133,8 @@ python tests/test_rich.py       # Rich HTML, parser, klien API (jaringan di-mock
 - [Telethon](https://github.com/LonamiWebs/Telethon): MTProto client (session user)
 - [PostgreSQL](https://www.postgresql.org/) + [psycopg2](https://pypi.org/project/psycopg2/): database
 - [httpx](https://www.python-httpx.org/) (dependensi bawaan python-telegram-bot): panggilan langsung `sendRichMessage`
+- [RapidOCR](https://github.com/RapidAI/RapidOCR) (onnxruntime): OCR bukti bayar offline
+- [Gemini API](https://ai.google.dev/gemini-api/docs) (opsional, free tier): pembaca bukti bayar mode OCR + AI, lewat `urllib` tanpa dependensi tambahan
 - [Railway](https://railway.app): hosting
 
 **Lisensi:** private, tidak untuk didistribusikan ulang tanpa izin.

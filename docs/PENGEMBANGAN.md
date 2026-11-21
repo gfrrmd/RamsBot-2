@@ -38,7 +38,8 @@ admin/                     Panel admin (statistik, pembayaran, promo, data, back
 utils/
   qris.py                    CRC16, parser TLV, validator, konversi, decode dan render QR
   rich.py                    🆕 Klien sendRichMessage dan pembangun Rich HTML
-  receipt.py, codes.py       OCR bukti bayar, kode/token
+  receipt.py, codes.py       OCR bukti bayar (+ penggabungan AI), kode/token
+  gemini.py, auto_mode.py    Pembaca bukti via Gemini API; mode verifikasi Manual/OCR/AI
   progress.py, media.py, log_media.py, helpers.py, channel_scanner.py
 
 tests/                     Tes tanpa framework (python tests/<file>.py)
@@ -94,6 +95,7 @@ Semua tabel dibuat otomatis oleh `init_db()`. Data lama aman.
 
 ```bash
 python tests/test_codes.py      # token, kode promo/voucher, limiter
-python tests/test_receipt.py    # parser bukti bayar
+python tests/test_receipt.py    # parser bukti bayar (OCR)
+python tests/test_receipt_ai.py # OCR + AI Gemini (jaringan di-mock)
 python tests/test_rich.py       # pembangun Rich HTML (blok, tombol dalam teks), parser, klien API (jaringan di-mock)
 ```
