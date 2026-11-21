@@ -49,7 +49,8 @@ from ui import (
 )
 from utils.codes import CodeError, blocked_message, calc_discount, limiter
 from utils.qris import QRISError, convert_qris, render_qr_png, summarize_qris
-from utils.receipt import ocr_available, sha256_hex, verify_receipt
+from utils.auto_mode import effective_mode
+from utils.receipt import sha256_hex, verify_by_mode
 
 MAX_PROOF_BYTES = 10 * 1024 * 1024
 PLAN_PAGE = 5                 # paket per halaman di menu beli
@@ -417,9 +418,13 @@ async def begin_proof(message, uid: int, order: dict | None) -> bool:
 
 # ── Terima bukti bayar ────────────────────────────────────────────────────────
 
-def _auto_verify_active(uid: int) -> bool:
-    """Auto-verifikasi berjalan jika: diaktifkan admin, OCR terpasang, dan user tidak ditandai wajib-manual."""
-    return get_setting("pay_auto", "0") == "1" and ocr_available() and uid not in get_manual_only_users()
+def _auto_mode_for(uid: int) -> str | None:
+    """'ocr' / 'ai' bila auto-verifikasi berjalan untuk user ini; None = jalur manual
+    (dimatikan admin, prasyarat tidak ada, atau user ditandai wajib-manual)."""
+    mode = effective_mode()
+    if mode == "manual" or uid in get_manual_only_users():
+        return None
+    return mode
 
 
 def _tz_offset() -> int:
@@ -484,7 +489,7 @@ async def handle_proof_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         notes.append(f"Gambar bukti IDENTIK dengan order #{dup['id']} (user {dup['user_id']}, status {dup['status']}) "
                      "— kemungkinan bukti dipakai ulang.")
 
-    auto = _auto_verify_active(uid)
+    auto = _auto_mode_for(uid)
     if not auto or data is None or dup:
         if auto and data is None:
             notes.append("Gambar gagal diunduh untuk OCR.")
@@ -492,9 +497,9 @@ async def handle_proof_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     # ── Auto-verifikasi (OCR) ──
-    wait_msg = await msg.reply_text("🔎 Membaca bukti pembayaran...")
+    wait_msg = await msg.reply_text("🤖 Memeriksa bukti pembayaran..." if auto == "ai" else "🔎 Membaca bukti pembayaran...")
     created = datetime.fromisoformat(order["created_at"])
-    res = await verify_receipt(data, order["total"], created, _deadline(order), _tz_offset())
+    res = await verify_by_mode(auto, data, order["total"], created, _deadline(order), _tz_offset())
     try:
         await wait_msg.delete()
     except Exception:
@@ -508,25 +513,30 @@ async def handle_proof_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         waiting_payment_proof.pop(uid, None)
         ok, info = await approve_and_notify(context.bot, oid, 0, "auto", res.note)
         if ok:
-            await notify_admin_auto_approved(context.bot, get_order(oid), res.note)
+            label = {"ai+ocr": "OCR + AI", "ai": "AI"}.get(res.source, "OCR")
+            await notify_admin_auto_approved(context.bot, get_order(oid), res.note, label)
         else:
             await msg.reply_text("⚠️ Pesanan sudah diproses.")
         return
 
-    if res.status in ("amount_mismatch", "unreadable"):
+    if res.status in ("amount_mismatch", "unreadable", "not_receipt"):
         attempts = bump_ocr_attempts(oid)
         if attempts < MAX_OCR_ATTEMPTS and order["status"] == "pending":
             set_order_proof(oid, file_ref, digest, "pending")        # tetap menunggu; user boleh kirim ulang
             left = MAX_OCR_ATTEMPTS - attempts
+            if res.status == "not_receipt":
+                head = "⚠️ <b>Gambar ini tidak terdeteksi sebagai bukti transfer.</b>"
+                tip = "Kirim screenshot bukti transfer / pembayaran dari aplikasi bank atau e-wallet kamu"
+            else:
+                head = "⚠️ <b>Nominal pada bukti belum terbaca / tidak cocok.</b>"
+                tip = f"Pastikan screenshot menampilkan nominal <b>{rp(order['total'])}</b> dengan jelas"
             await msg.reply_text(
-                f"⚠️ <b>Nominal pada bukti belum terbaca / tidak cocok.</b>\n\n"
-                f"Pastikan screenshot menampilkan nominal <b>{rp(order['total'])}</b> dengan jelas "
-                "(seluruh layar, tidak terpotong atau buram), lalu kirim ulang.\n"
+                f"{head}\n\n{tip} (seluruh layar, tidak terpotong atau buram), lalu kirim ulang.\n"
                 f"Sisa percobaan otomatis: {left}. Ketik /cancel untuk batal.",
                 parse_mode=ParseMode.HTML,
             )
             return
-        notes.append(f"{res.note} (OCR gagal setelah {attempts} percobaan)")
-    else:                                                            # time_mismatch | error
+        notes.append(f"{res.note} (verifikasi otomatis gagal setelah {attempts} percobaan)")
+    else:                                                            # time_mismatch | suspicious | error
         notes.append(res.note)
     await _forward_to_admin(context, msg, user, oid, file_ref, digest, " ".join(notes))

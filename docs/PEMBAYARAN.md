@@ -17,9 +17,32 @@ Alur pembelian, auto-verifikasi OCR, Token VIP, kode promo, dan voucher.
 
 > Verifikasi bersifat **manual** karena QRIS statis tidak punya API notifikasi. Kode unik membantu mencocokkan mutasi.
 
-## 🤖 Auto-verifikasi bukti bayar (OCR)
+## 🤖 Auto-verifikasi bukti bayar (Manual / OCR / OCR + AI)
 
-Bot dapat membaca screenshot bukti transfer dan menyetujui order otomatis.
+Bot dapat membaca screenshot bukti transfer dan menyetujui order otomatis. Ada **3 mode**, diganti lewat
+Panel Admin → Pembayaran → Pengaturan → **Mode Verifikasi** (tombol berputar: Manual → OCR saja → OCR + AI):
+
+| Mode | Cara kerja |
+|---|---|
+| **Manual** (default) | Semua bukti diputuskan admin. |
+| **OCR saja** | RapidOCR (offline) membaca nominal & waktu. Cocok = VIP aktif otomatis. |
+| **OCR + AI** | OCR dan AI Gemini berjalan bersamaan. AI memastikan gambar benar-benar bukti transfer (bukan foto/chat/QRIS belum dibayar), membaca nominal & waktu, lalu dicocokkan di kode dengan OCR dan total order. |
+
+**Aturan mode OCR + AI**
+- AI **hanya mengekstrak data**; nominal order tidak dikirim ke AI dan keputusan approve selalu dibuat oleh kode.
+- AI menilai bukan bukti transfer → user diminta kirim ulang (maks 3x), lalu ke admin.
+- AI menilai transaksi gagal/pending, curiga gambar diedit, atau hasil AI dan OCR bertentangan → langsung ke admin.
+- AI gagal (limit, error, timeout, key salah) → memakai hasil OCR. AI dan OCR sama-sama gagal → ke admin (manual).
+- Mode yang prasyaratnya belum ada dilewati tombol (OCR+AI butuh `GEMINI_API_KEY`); jika key dihapus saat mode OCR + AI aktif, bot otomatis turun ke OCR.
+
+**Setup AI di Railway:** Variables → tambah `GEMINI_API_KEY` (key gratis dari <https://aistudio.google.com/apikey>) → redeploy.
+Opsional: `GEMINI_MODELS` (daftar model dipisah koma, dicoba berurutan; default `gemini-3.8-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite`),
+`GEMINI_TIMEOUT` (detik, default 25), `GEMINI_RPM` (batas permintaan/menit dari sisi bot, default 8, agar kuota free tidak habis).
+Cek kuota & model yang aktif di projectmu pada <https://aistudio.google.com/rate-limit>.
+
+> ⚠️ **Privasi:** pada free tier Google dapat memakai data yang dikirim untuk meningkatkan produknya dan reviewer manusia dapat membacanya. Screenshot bukti transfer berisi nama/rekening pembeli. Pertimbangkan hal ini (dan aturan wilayah, mis. EEA/UK/CH mewajibkan layanan berbayar untuk produk yang melayani pengguna di sana).
+
+Bagian di bawah menjelaskan aturan baca yang dipakai kedua mesin.
 
 **Aturan baca**
 - **Wajib:** nominal pada gambar sama dengan total order (harga + kode unik).
@@ -34,16 +57,18 @@ Bot dapat membaca screenshot bukti transfer dan menyetujui order otomatis.
 | Nominal tidak terbaca atau tidak cocok | User diminta kirim ulang (maks 3x), setelah itu diteruskan ke admin |
 | Nominal cocok tapi waktu di luar rentang | Diteruskan ke admin (tidak di-approve otomatis) |
 | Gambar identik dengan bukti order lain | Diteruskan ke admin dengan peringatan |
+| Mode OCR + AI: bukan bukti transfer | User diminta kirim ulang (maks 3x), setelah itu ke admin |
+| Mode OCR + AI: transaksi gagal, indikasi diedit, atau AI ≠ OCR | Diteruskan ke admin dengan alasan |
 | OCR error atau library belum terpasang | Diteruskan ke admin (alur manual biasa) |
 
 **Kontrol admin** (Panel Admin → Pembayaran)
-- **🤖 Auto-Verifikasi ON/OFF**: default OFF. OFF berarti semua bukti diverifikasi manual.
+- **🤖 Mode Verifikasi**: Manual (default) / OCR saja / OCR + AI.
 - **🧾 Riwayat Auto**: daftar order yang disetujui bot.
 - **🚫 Batalkan Langganan**: pada order Lunas, status order jadi *Dicabut* dan masa VIP dikurangi sebesar hari paket order itu (pembelian sah lain tidak terpengaruh). Jika sisa habis, VIP dinonaktifkan dan session dihentikan. Tersedia opsi **wajib manual** agar pembayaran user tersebut ke depan tidak lagi diverifikasi otomatis.
 
 **Catatan keamanan:** OCR hanya membaca gambar, jadi screenshot hasil editan tetap bisa lolos. Karena itu setiap persetujuan otomatis dilaporkan ke admin, bukti identik dideteksi, dan admin bisa membatalkan kapan saja. Untuk kepastian penuh, cocokkan dengan mutasi rekening.
 
-**Dependensi:** `rapidocr-onnxruntime` (model OCR ikut paket, sekitar 15 MB; RAM 300–500 MB saat OCR berjalan). Jika muncul error `libGL.so.1`, pasang paket sistem `libgl1`.
+**Dependensi:** mode AI tidak butuh paket tambahan (memakai library standar Python). OCR: `rapidocr-onnxruntime` (model OCR ikut paket, sekitar 15 MB; RAM 300–500 MB saat OCR berjalan). Jika muncul error `libGL.so.1`, pasang paket sistem `libgl1`.
 
 ## 🔑 Token VIP (pindah VIP ke akun lain)
 

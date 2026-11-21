@@ -6,9 +6,14 @@ Aturan verifikasi:
   - OPSIONAL : tanggal & jam transaksi. Jika terbaca, harus berada di rentang
     "order dibuat" s/d "batas waktu bayar". Jika tidak terbaca, hanya nominal yang dicek.
 
-Mesin OCR: RapidOCR (onnxruntime) — offline, gratis, tanpa API key. Perbandingan nominal
-dilakukan di kode (bukan oleh model), sehingga teks di dalam gambar tidak bisa
-"menyuruh" bot menyetujui pembayaran.
+Tiga mode verifikasi (diatur admin, lihat utils/auto_mode.py):
+  - manual : semua bukti diputuskan admin.
+  - ocr    : RapidOCR (onnxruntime) — offline, gratis, tanpa API key.
+  - ai     : OCR + Gemini. AI memastikan gambar benar-benar bukti transfer dan membaca nominal/waktu;
+             hasilnya dicocokkan dengan OCR. Jika AI gagal → memakai OCR; jika keduanya gagal → manual.
+
+Perbandingan nominal selalu dilakukan di kode (bukan oleh model), sehingga teks di dalam gambar
+tidak bisa "menyuruh" bot menyetujui pembayaran.
 """
 from __future__ import annotations
 
@@ -35,7 +40,7 @@ class ReceiptError(Exception):
 
 @dataclass
 class ReceiptResult:
-    # match | amount_mismatch | time_mismatch | unreadable | error
+    # match | amount_mismatch | time_mismatch | unreadable | not_receipt | suspicious | error
     status: str
     expected: int = 0
     amounts: list[int] = field(default_factory=list)
@@ -43,6 +48,7 @@ class ReceiptResult:
     time_checked: str = "none"          # datetime | date | none
     note: str = ""
     rows: list[str] = field(default_factory=list)
+    source: str = "ocr"                 # ocr | ai | ai+ocr
 
 
 # ── Mesin OCR ─────────────────────────────────────────────────────────────────
@@ -287,7 +293,12 @@ def evaluate(rows: list[str], expected_total: int, created_utc: datetime, deadli
         return res
 
     # Nominal cocok → cek waktu (opsional)
-    dts = extract_datetimes(rows, default_offset)
+    return apply_time(res, extract_datetimes(rows, default_offset), created_utc, deadline_utc)
+
+
+def apply_time(res: ReceiptResult, dts: list[tuple[datetime, bool, int]],
+               created_utc: datetime, deadline_utc: datetime) -> ReceiptResult:
+    """Nominal sudah cocok → tentukan match / time_mismatch dari daftar (datetime lokal, punya_jam, offset)."""
     if not dts:
         res.status, res.time_checked = "match", "none"
         res.note = "Nominal cocok. Tanggal/jam tidak terbaca → hanya nominal yang diverifikasi."
@@ -330,3 +341,144 @@ async def verify_receipt(data: bytes, expected_total: int, created_utc: datetime
     except Exception as e:                                  # engine belum terpasang / gagal / timeout
         return ReceiptResult(status="error", expected=expected_total, note=f"OCR gagal: {type(e).__name__}: {e}"[:200])
     return evaluate(rows, expected_total, created_utc, deadline_utc, default_offset)
+
+
+# ── OCR + AI (Gemini) ─────────────────────────────────────────────────────────
+
+def _ai_datetimes(ai, default_offset: int) -> list[tuple[datetime, bool, int]]:
+    """Tanggal/jam hasil baca AI → format yang sama dengan extract_datetimes()."""
+    if not ai.date:
+        return []
+    y, mo, d = (int(x) for x in ai.date.split("-"))
+    offset = _TZ_OFFSET.get(ai.tz or "", default_offset)
+    try:
+        if ai.time:
+            parts = [int(x) for x in re.split(r"[:.]", ai.time)]
+            hh, mm = parts[0], parts[1]
+            ss = parts[2] if len(parts) > 2 else 0
+            return [(datetime(y, mo, d, hh, mm, ss), True, offset)]
+        return [(datetime(y, mo, d), False, offset)]
+    except ValueError:
+        return []
+
+
+def _ai_desc(ai) -> str:
+    bits = [b for b in (ai.app, f"ke {ai.recipient}" if ai.recipient else "") if b]
+    return f" [{' '.join(bits)}]" if bits else ""
+
+
+def combine(ai, ocr: ReceiptResult | None, expected_total: int, created_utc: datetime,
+            deadline_utc: datetime, default_offset: int = 7) -> ReceiptResult:
+    """
+    Gabungkan hasil AI (boleh None bila gagal) dengan hasil OCR (boleh None). Murni logika → mudah diuji.
+
+    Keputusan:
+      - AI gagal           → pakai hasil OCR apa adanya (keduanya gagal → status error → manual).
+      - bukan bukti        → not_receipt (user diminta kirim ulang, lalu manual).
+      - gagal/pending, indikasi diedit, atau AI vs OCR bertentangan → suspicious (diteruskan ke admin).
+      - nominal AI ≠ order → amount_mismatch.
+      - nominal cocok      → cek waktu (tanggal/jam dari AI, cadangan dari OCR).
+    """
+    def fin(res: ReceiptResult, src: str) -> ReceiptResult:
+        res.source = src
+        return res
+
+    if ai is None:
+        if ocr is None:
+            return ReceiptResult(status="error", expected=expected_total, note="AI dan OCR sama-sama tidak bisa dipakai.")
+        ocr.note = f"AI tidak tersedia → memakai OCR. {ocr.note}".strip()
+        return fin(ocr, "ocr")
+
+    src = "ai+ocr" if ocr is not None else "ai"
+    rows = ocr.rows if ocr else []
+    res = ReceiptResult(status="unreadable", expected=expected_total, rows=rows, source=src)
+    desc = _ai_desc(ai)
+
+    if not ai.is_receipt:
+        res.status = "not_receipt"
+        res.note = "AI menilai gambar ini bukan bukti transfer/pembayaran."
+        return res
+    if ai.status in ("failed", "pending"):
+        res.status = "suspicious"
+        res.note = f"Bukti menunjukkan transaksi belum berhasil (status: {ai.status}){desc}."
+        return res
+    if ai.edited:
+        extra = f" ({'; '.join(ai.signs)})" if ai.signs else ""
+        res.status = "suspicious"
+        res.note = f"AI mencurigai gambar bukti direkayasa{extra}."
+        return res
+
+    ocr_amount_ok = bool(ocr) and ocr.status in ("match", "time_mismatch")
+    ocr_amount_bad = bool(ocr) and ocr.status == "amount_mismatch"
+    seen = ", ".join(f"{a:,}".replace(",", ".") for a in (ocr.amounts if ocr else [])) or "-"
+
+    if ai.amount is None:
+        if ocr_amount_ok:                       # AI yakin ini bukti; nominal dibaca OCR
+            ocr.note = f"AI: bukti valid{desc}, nominal dibaca OCR. {ocr.note}"
+            return fin(ocr, src)
+        res.note = "Nominal tidak terbaca oleh AI maupun OCR."
+        return res
+
+    res.amounts = [ai.amount]
+    if ai.amount != expected_total:
+        if ocr_amount_ok:
+            res.status = "suspicious"
+            res.note = (f"AI membaca nominal {ai.amount:,}".replace(",", ".")
+                        + " tetapi OCR membaca nominal yang sesuai order — hasil bertentangan.")
+        else:
+            res.status = "amount_mismatch"
+            res.note = (f"Nominal pada gambar ({ai.amount:,}".replace(",", ".")
+                        + ") tidak sama dengan total order.")
+        return res
+
+    if ocr_amount_bad:
+        res.status = "suspicious"
+        res.note = f"AI membaca nominal sesuai order, tetapi OCR membaca {seen} — hasil bertentangan."
+        return res
+
+    dts = _ai_datetimes(ai, default_offset) or (extract_datetimes(rows, default_offset) if rows else [])
+    res = apply_time(res, dts, created_utc, deadline_utc)
+    confirm = "AI + OCR cocok" if ocr_amount_ok else "AI cocok (OCR tidak membaca nominal)" if ocr else "AI cocok"
+    res.note = f"{confirm}{desc}. {res.note}"
+    return res
+
+
+async def _ocr_safe(data: bytes, expected_total: int, created_utc: datetime, deadline_utc: datetime,
+                    default_offset: int) -> ReceiptResult | None:
+    """Jalankan OCR → ReceiptResult; None bila OCR tidak terpasang / gagal."""
+    if not ocr_available():
+        return None
+    res = await verify_receipt(data, expected_total, created_utc, deadline_utc, default_offset)
+    return None if res.status == "error" else res
+
+
+async def verify_receipt_ai(data: bytes, expected_total: int, created_utc: datetime, deadline_utc: datetime,
+                            default_offset: int = 7) -> ReceiptResult:
+    """Mode OCR + AI: OCR dan Gemini berjalan bersamaan, lalu digabung oleh combine()."""
+    from utils.gemini import GeminiError, analyze_receipt
+
+    async def _ai():
+        try:
+            return await analyze_receipt(data), ""
+        except GeminiError as e:
+            return None, str(e)
+        except Exception as e:                                  # jaringan/bug tak terduga
+            return None, f"{type(e).__name__}: {e}"
+
+    (ai, ai_err), ocr = await asyncio.gather(
+        _ai(), _ocr_safe(data, expected_total, created_utc, deadline_utc, default_offset))
+    res = combine(ai, ocr, expected_total, created_utc, deadline_utc, default_offset)
+    if ai is None and ai_err:
+        print(f"[receipt] Gemini gagal: {ai_err}")
+        res.note = f"{res.note} (AI: {ai_err[:100]})".strip()
+    if res.status == "error":
+        res.note = f"{res.note} {ai_err}"[:200]
+    return res
+
+
+async def verify_by_mode(mode: str, data: bytes, expected_total: int, created_utc: datetime,
+                         deadline_utc: datetime, default_offset: int = 7) -> ReceiptResult:
+    """Pintu masuk tunggal: 'ocr' atau 'ai'. (Mode 'manual' tidak memanggil fungsi ini.)"""
+    if mode == "ai":
+        return await verify_receipt_ai(data, expected_total, created_utc, deadline_utc, default_offset)
+    return await verify_receipt(data, expected_total, created_utc, deadline_utc, default_offset)

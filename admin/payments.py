@@ -30,6 +30,7 @@ from keyboards import main_keyboard, nav_row, order_admin_keyboard, page_info
 from services.session_runner import ensure_client_running
 from ui import STATUS_LABEL, edit_or_send, esc, fmt_dt, header, kv, replace_with_photo, rp, sub_badge, token_notice
 from utils.qris import QRISError, convert_qris, parse_amount, render_qr_png, summarize_qris
+from utils.auto_mode import LABEL as MODE_LABEL, configured_mode, effective_mode, mode_problem, next_mode, set_mode
 from utils.receipt import ocr_available, ocr_error
 
 PAGE = 8
@@ -96,10 +97,10 @@ async def notify_admin_new_proof(bot, order: dict, user, note: str | None = None
     await _send_proof(bot, order, caption, order_admin_keyboard(order["id"]))
 
 
-async def notify_admin_auto_approved(bot, order: dict, note: str) -> None:
+async def notify_admin_auto_approved(bot, order: dict, note: str, source_label: str = "OCR") -> None:
     """Laporan tiap persetujuan otomatis, lengkap dengan tombol pembatalan jika ternyata curang."""
     caption = (
-        f"🤖 <b>Disetujui otomatis (OCR)</b>\n\n{_order_admin_text(order)}\n\n"
+        f"🤖 <b>Disetujui otomatis ({esc(source_label)})</b>\n\n{_order_admin_text(order)}\n\n"
         f"Hasil baca: {esc(note)}\n\n"
         "Cocokkan dengan mutasi bila perlu. Jika bukti terindikasi palsu, batalkan langganan di bawah."
     )
@@ -233,28 +234,45 @@ def build_pay_admin_text(settings: bool = False) -> str:
     uniq_on = get_setting("pay_unique", "1") == "1"
     waiting = count_orders(("pending", "verifying"))
     paket = str(len(active)) + " dari " + str(len(plans))
-    auto_on = get_setting("pay_auto", "0") == "1"
+    mode = configured_mode()
+    running = effective_mode()
     ocr_ok = ocr_available()
-    auto_txt = "ON ✅" if auto_on else "OFF ❌"
-    if not ocr_ok:
-        auto_txt += " — ⚠️ OCR tidak tersedia, semua bukti diverifikasi manual"
+    problem = mode_problem(mode)
+    auto_txt = {"manual": "Manual ✋", "ocr": "OCR saja 🔎", "ai": "OCR + AI 🤖"}[mode]
+    if running != mode:
+        auto_txt += f" — ⚠️ berjalan sebagai {MODE_LABEL[running]}"
+    warn = ""
+    if problem:
+        warn += f"⚠️ <b>{esc(problem)}</b>\n"
+    if mode != "manual" and not ocr_ok:
+        warn += f"⚠️ <b>OCR tidak dapat dimuat:</b> <code>{esc(ocr_error())}</code>\n"
+    if warn:
+        warn += "\n"
+    from utils.gemini import gemini_configured, model_list
+    ai_line = (f"\nAI Gemini: ✅ siap (<code>{esc(model_list()[0])}</code>)" if gemini_configured()
+               else "\nAI Gemini: ❌ isi <code>GEMINI_API_KEY</code> di Railway Variables untuk mode OCR + AI")
+    explain = {
+        "manual": "Mode <b>Manual</b>: cek mutasi, lalu tekan <b>Approve</b> pada notifikasi bukti bayar.",
+        "ocr": ("Mode <b>OCR saja</b>: bot membaca nominal (dan tanggal/jam bila terlihat) pada screenshot; "
+                "jika cocok, VIP aktif otomatis dan kamu menerima laporan + tombol pembatalan. "
+                "Kasus janggal atau tidak terbaca diteruskan ke admin."),
+        "ai": ("Mode <b>OCR + AI</b>: AI Gemini memastikan gambar benar-benar bukti transfer dan membaca nominal/waktu, "
+               "dicocokkan dengan OCR dan total order. Jika AI gagal → OCR; jika keduanya gagal → diteruskan ke admin."),
+    }[mode]
     return (
         f"{header('⚙️' if settings else '💳', 'Pengaturan Pembayaran' if settings else 'Pembayaran')}\n"
         f"{kv('QRIS bayar', qris_line, 11)}\n"
         f"{kv('Paket aktif', paket, 11)}\n"
         f"{kv('Kode unik', 'ON ✅' if uniq_on else 'OFF ❌', 11)}\n"
         f"{kv('Batas bayar', str(_expire_minutes()) + ' menit', 11)}\n"
-        f"{kv('Auto-verifikasi', auto_txt, 11)}\n"
+        f"{kv('Verifikasi', auto_txt, 11)}\n"
         f"{kv('Menunggu', str(waiting) + ' order', 11)}\n"
         "\n"
-        + (f"⚠️ <b>OCR tidak dapat dimuat:</b> <code>{esc(ocr_error())}</code>\n\n" if not ocr_ok else "")
+        + warn
         + f"Status toko: {'🟢 Siap menerima pesanan' if ready else '🔴 Belum siap (atur QRIS & minimal 1 paket aktif)'}\n\n"
         "ℹ️ Pembeli membayar ke QRIS dinamis (nominal otomatis).\n"
-        + ("Auto-verifikasi <b>ON</b>: bot membaca nominal (dan tanggal/jam bila terlihat) pada screenshot; "
-           "jika cocok, VIP aktif otomatis dan kamu menerima laporan + tombol pembatalan. "
-           "Kasus janggal diteruskan ke admin."
-           if auto_on else
-           "Auto-verifikasi <b>OFF</b>: cek mutasi, lalu tekan <b>Approve</b> pada notifikasi bukti bayar.")
+        + explain
+        + ai_line
     )
 
 
@@ -272,11 +290,11 @@ def pay_admin_keyboard() -> InlineKeyboardMarkup:
 def pay_settings_keyboard() -> InlineKeyboardMarkup:
     """Kategori Pengaturan: QRIS, kode unik, batas waktu, auto-verifikasi."""
     uniq = get_setting("pay_unique", "1") == "1"
-    auto = get_setting("pay_auto", "0") == "1"
+    mode = configured_mode()
     return InlineKeyboardMarkup([
         [Btn("🧾 Set QRIS Bayar", callback_data="admin_pay_setqris"), Btn("👁️ Lihat QRIS", callback_data="admin_pay_viewqris")],
         [Btn(f"🔢 Kode Unik: {'ON ✅' if uniq else 'OFF ❌'}", callback_data="admin_pay_uniq"), Btn("⏱️ Batas Waktu", callback_data="admin_pay_exp")],
-        [Btn(f"🤖 Auto-Verifikasi: {'ON ✅' if auto else 'OFF ❌'}", callback_data="admin_pay_auto")],
+        [Btn(f"🤖 Mode Verifikasi: {MODE_LABEL[mode]}", callback_data="admin_pay_auto")],
         [Btn("🔙 Pembayaran", callback_data="admin_pay")],
     ])
 
@@ -452,12 +470,7 @@ async def handle_callback(query, context, data: str) -> bool:
         return True
 
     if data == "admin_pay_auto":
-        if get_setting("pay_auto", "0") == "1":
-            set_setting("pay_auto", "0")
-        elif not ocr_available():
-            pass            # alasan ditampilkan di panel (query sudah di-answer oleh handler induk)
-        else:
-            set_setting("pay_auto", "1")
+        set_mode(next_mode(configured_mode()))      # manual → OCR → OCR + AI (yang belum siap dilewati)
         await show_pay_settings(query)
         return True
 

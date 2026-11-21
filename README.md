@@ -103,7 +103,7 @@ python main.py
 | Dokumen | Isi |
 |---|---|
 | [docs/RICH_POST.md](docs/RICH_POST.md) | Rich Post: alur, opsi format, blok, tombol dalam teks, keamanan |
-| [docs/PEMBAYARAN.md](docs/PEMBAYARAN.md) | Alur beli VIP, auto-verifikasi OCR, Token VIP, kode promo, voucher |
+| [docs/PEMBAYARAN.md](docs/PEMBAYARAN.md) | Alur beli VIP, verifikasi bukti bayar (Manual / OCR / OCR + AI Gemini), Token VIP, kode promo, voucher |
 | [docs/ADMIN.md](docs/ADMIN.md) | Menu bot dan admin, backup, Bersihkan Data |
 | [docs/PENGEMBANGAN.md](docs/PENGEMBANGAN.md) | Struktur proyek, skema database, cara menambah fitur, tes |
 

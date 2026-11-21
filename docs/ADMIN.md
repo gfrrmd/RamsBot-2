@@ -22,7 +22,7 @@ Perintah admin: `/admin`, `/stats`, `/backup`, `/gift`, `/revoke`.
 | Menu | Deskripsi |
 |---|---|
 | 📊 Statistik | User, VIP aktif/expired, session online, order, pendapatan |
-| 💳 Pembayaran | Set QRIS penerima, kelola paket dan harga, kode unik, batas waktu, verifikasi order, auto-verifikasi |
+| 💳 Pembayaran | Set QRIS penerima, kelola paket dan harga, kode unik, batas waktu, verifikasi order, mode verifikasi (Manual / OCR / OCR + AI) |
 | 👥 Pengguna | List VIP berpaginasi, Cek User (kartu dengan tombol +7/+30 hari dan revoke), Gift, Revoke, Pengumuman (teks/media ke semua user) |
 | 🏷️ Promosi | Kode Promo dan Voucher |
 | 🔒 Blacklist | Channel yang tidak bisa diunduh lewat `.copy` oleh siapa pun. Submenu **👤 Restricted Account**: akun yang medianya tidak bisa diunduh lewat `.dl`, `.story`, Auto DL, dan log timer outgoing |

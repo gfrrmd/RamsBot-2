@@ -32,3 +32,4 @@ Kirim file backup `.sql.gz` dari Termux lewat menu admin di bot: **Data → Rest
 - Railway memakai `railway.json` (start command `python main.py`, restart otomatis saat gagal) dan Python 3.12.
 - Verifikasi bukti bayar otomatis (OCR) membutuhkan paket di `requirements.txt` dan `railpack.json` (`libgl1`, `libglib2.0-0`). Keduanya sudah disertakan.
 - Karena memakai OCR, build pertama bisa memakan beberapa menit.
+- Mode **OCR + AI** (opsional): tambahkan variabel `GEMINI_API_KEY` (key gratis dari https://aistudio.google.com/apikey) di Variables, lalu redeploy. Tanpa key, bot tetap jalan dengan mode Manual / OCR saja.
